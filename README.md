@@ -64,13 +64,13 @@ provenance/                    来源及原始/公开字节哈希
 
 ## 权重
 
-权重、优化器状态和数据包不放入 Git。
+权重、优化器状态和数据包不放入 Git。全部已上传 checkpoint 的批次、固定版本链接、权重 SHA256 及评测对应关系见 [checkpoint 映射表](results/CHECKPOINT_MAPPING.md) 和 [JSON 映射](results/huggingface-checkpoint-map.json)。
 
 | Adapter | Hugging Face |
 |---|---|
-| 早上 remediation checkpoint-25（本次51/126） | [runs/remediation-20261022/checkpoint-25](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/main/runs/remediation-20261022/checkpoint-25) |
-| 新版 prefix-v2 checkpoint-25 | [runs/prefix-v2-20261022/checkpoint-25](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/main/runs/prefix-v2-20261022/checkpoint-25) |
-| 新版 prefix-v2 checkpoint-50 | [runs/prefix-v2-20261022/checkpoint-50](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/main/runs/prefix-v2-20261022/checkpoint-50) |
+| 早上 remediation checkpoint-25（本次51/126） | [runs/remediation-20261022/checkpoint-25](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/79d76f1f79c79aec6645d0906f4088b417c8730a/runs/remediation-20261022/checkpoint-25) |
+| 新版 prefix-v2 checkpoint-25 | [runs/prefix-v2-20261022/checkpoint-25](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/79d76f1f79c79aec6645d0906f4088b417c8730a/runs/prefix-v2-20261022/checkpoint-25) |
+| 新版 prefix-v2 checkpoint-50 | [runs/prefix-v2-20261022/checkpoint-50](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/79d76f1f79c79aec6645d0906f4088b417c8730a/runs/prefix-v2-20261022/checkpoint-50) |
 
 ## 公开范围
 

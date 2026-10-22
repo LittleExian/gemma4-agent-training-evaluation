@@ -2,7 +2,7 @@
 
 已核对 **13 个完整模型/运行配置，共 1677 条逐题记录**，包含此前已发布的 morning25。七模型对比计 7 个配置，属于同一个实验批次；小样本、重试和失败打包不重复计数。日期型目录名沿用原运行标签，实际起止时间见各组 summary。
 
-[完整参数 JSON](historical-129-index.json) · [汇总 CSV](historical-129-index.csv)
+[对应 Hugging Face checkpoint](CHECKPOINT_MAPPING.md) · [完整参数 JSON](historical-129-index.json) · [汇总 CSV](historical-129-index.csv)
 
 | 配置 | 解决题数 | 超时 | 分钟 / 工具 / 轮数 | thinking | top-k | 总并发 | 证据 |
 |---|---:|---:|---|---:|---|---:|---|

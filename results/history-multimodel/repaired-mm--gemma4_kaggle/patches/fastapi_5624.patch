@@ -1,0 +1,211 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 1e92c1ba..8398b01c 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -275,7 +275,7 @@ def get_dependant(
+                     f'The dependency "{dependant.call.__name__}" has a scope of '
+                     '"request", it cannot depend on dependencies with scope "function".'
+                 )
+-            use_security_scopes = security_scopes or []
++            use_security_scopes = list(security_scopes) if security_scopes else []
+             if isinstance(param_details.depends, params.Security):
+                 if param_details.depends.scopes:
+                     use_security_scopes.extend(param_details.depends.scopes)
+@@ -575,6 +575,7 @@ async def solve_dependencies(
+     # people might be monkey patching this function (although that's not supported)
+     async_exit_stack: AsyncExitStack,
+     embed_body_fields: bool,
++    security_scopes: Optional[List[str]] = None,
+ ) -> SolvedDependency:
+     request_astack = request.scope.get("fastapi_inner_astack")
+     assert isinstance(request_astack, AsyncExitStack), (
+@@ -584,6 +585,18 @@ async def solve_dependencies(
+     assert isinstance(function_astack, AsyncExitStack), (
+         "fastapi_function_astack not found in request scope"
+     )
++    if security_scopes is None:
++        all_scopes = set()
++
++        def collect_all(dep):
++            all_scopes.update(dep.security_scopes or [])
++            for sub_dep in dep.dependencies:
++                collect_all(sub_dep)
++
++        collect_all(dependant)
++        current_scopes = sorted(list(all_scopes))
++    else:
++        current_scopes = security_scopes
+     values: Dict[str, Any] = {}
+     errors: List[Any] = []
+     if response is None:
+@@ -623,6 +636,7 @@ async def solve_dependencies(
+             dependency_cache=dependency_cache,
+             async_exit_stack=async_exit_stack,
+             embed_body_fields=embed_body_fields,
++            security_scopes=current_scopes,
+         )
+         background_tasks = solved_result.background_tasks
+         if solved_result.errors:
+@@ -691,7 +705,7 @@ async def solve_dependencies(
+         values[dependant.response_param_name] = response
+     if dependant.security_scopes_param_name:
+         values[dependant.security_scopes_param_name] = SecurityScopes(
+-            scopes=dependant.security_scopes
++            scopes=current_scopes
+         )
+     return SolvedDependency(
+         values=values,
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..072cd013
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,43 @@
++from fastapi import Depends, FastAPI, Security
++from fastapi.security import SecurityScopes
++from fastapi.testclient import TestClient
++from typing import List
++
++app = FastAPI()
++
++def get_scopes(security_scopes: SecurityScopes):
++    return security_scopes.scopes
++
++def dep_a(scopes: List[str] = Security(get_scopes, scopes=["read"])):
++    return scopes
++
++def dep_b(scopes: List[str] = Security(get_scopes, scopes=["write"])):
++    return scopes
++
++@app.get("/test")
++def read_root(
++    a: List[str] = Depends(dep_a),
++    b: List[str] = Depends(dep_b)
++):
++    return {"a": a, "b": b}
++
++client = TestClient(app)
++
++def test_scopes():
++    response = client.get("/test")
++    print(f"Response: {response.json()}")
++    # Both a and b should see both scopes if they are aggregated
++    # However, in the current implementation, dep_a only sees ["read"] and dep_b only sees ["write"]
++    # because they are siblings.
++    # With the fix, both should see ["read", "write"] (order might vary)
++    assert set(response.json()["a"]) == {"read", "write"}
++    assert set(response.json()["b"]) == {"read", "write"}
++
++if __name__ == "__main__":
++    try:
++        test_scopes()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++    except Exception as e:
++        print(f"An error occurred: {e}")
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..d7d5940b
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,44 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import SecurityScopes, OAuth2PasswordBearer
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
++
++def dep_shared(scopes: SecurityScopes):
++    return scopes.scopes
++
++def dep1(scopes: SecurityScopes, shared=Depends(dep_shared)):
++    return {"scopes": scopes.scopes, "shared": shared}
++
++def dep2(scopes: SecurityScopes, shared=Depends(dep_shared)):
++    return {"scopes": scopes.scopes, "shared": shared}
++
++@app.get("/")
++def root(
++    d1=Security(dep1, scopes=["scope1"]),
++    d2=Security(dep2, scopes=["scope2"]),
++):
++    return {"d1": d1, "d2": d2}
++
++client = TestClient(app)
++
++def test_security_scopes_propagation():
++    # Provide a token to avoid 401
++    response = client.get("/", headers={"Authorization": "Bearer token"})
++    assert response.status_code == 200
++    data = response.json()
++    
++    # Both d1 and d2 should have both scopes
++    # and dep_shared should also have both scopes
++    expected_scopes = ["scope1", "scope2"]
++    
++    # The order might be different, so we use sets
++    assert set(data["d1"]["scopes"]) == set(expected_scopes)
++    assert set(data["d1"]["shared"]) == set(expected_scopes)
++    assert set(data["d2"]["scopes"]) == set(expected_scopes)
++    assert set(data["d2"]["shared"]) == set(expected_scopes)
++
++if __name__ == "__main__":
++    test_security_scopes_propagation()
++    print("Test passed!")
+diff --git a/reproduction_script.py b/reproduction_script.py
+new file mode 100644
+index 00000000..a0f1edb2
+--- /dev/null
++++ b/reproduction_script.py
+@@ -0,0 +1,49 @@
++import asyncio
++from fastapi import FastAPI, Depends, Security
++from fastapi.security.oauth2 import SecurityScopes
++from fastapi.testclient import TestClient
++from typing import List
++
++app = FastAPI()
++
++async def get_scopes(scopes: SecurityScopes):
++    return scopes.scopes
++
++async def dep1(scopes: SecurityScopes):
++    return scopes.scopes
++
++async def dep2(scopes: SecurityScopes):
++    return scopes.scopes
++
++async def dep_shared(scopes: SecurityScopes):
++    return scopes.scopes
++
++@app.get("/")
++async def root(
++    s1 = Security(dep1, scopes=["scope1"]),
++    s2 = Security(dep2, scopes=["scope2"]),
++    shared = Security(dep_shared),
++):
++    return {"s1": s1, "s2": s2, "shared": shared}
++
++client = TestClient(app)
++
++def test_scopes():
++    response = client.get("/")
++    assert response.status_code == 200
++    data = response.json()
++    print(f"Data: {data}")
++    # dep1 should see scope1
++    # dep2 should see scope2
++    # dep_shared should see both scope1 and scope2
++    assert set(data["s1"]) == {"scope1"}
++    assert set(data["s2"]) == {"scope2"}
++    assert set(data["shared"]) == {"scope1", "scope2"}
++
++if __name__ == "__main__":
++    try:
++        test_scopes()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)

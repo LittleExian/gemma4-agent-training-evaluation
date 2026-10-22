@@ -1,0 +1,156 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index a8546227..24e71205 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -5,6 +5,46 @@ from typing import Callable
+ 
+ from ._cell_widths import CELL_WIDTHS
+ 
++def split_graphemes(text: str) -> list[str]:
++    \"\"\"Split text into grapheme clusters.\"\"\"
++    if not text:
++        return []
++    graphemes = []
++    i = 0
++    while i < len(text):
++        char = text[i]
++        grapheme = char
++        i += 1
++        while i < len(text):
++            next_char = text[i]
++            if next_char == \"\\u200d\":  # ZWJ
++                grapheme += next_char
++                i += 1
++                if i < len(text):
++                    grapheme += text[i]
++                    i += 1
++                continue
++            if (
++                \"\\u0300\" <= next_char <= \"\\u036f\"
++                or \"\\u1ab0\" <= next_char <= \"\\u1aff\"
++                or \"\\u1dc0\" <= next_char <= \"\\u1dff\"
++                or \"\\u20d0\" <= next_char <= \"\\u20ff\"
++                or \"\\ufe20\" <= next_char <= \"\\ufe2f\"
++                or \"\\ufe00\" <= next_char <= \"\\ufe0f\"
++            ):
++                grapheme += next_char
++                i += 1
++                continue
++            if \"\\U0001f1e6\" <= char <= \"\\U0001f1ff\" and \"\\U0001f1e6\" <= next_char <= \"\\U0001f1ff\":
++                grapheme += next_char
++                i += 1
++                char = next_char
++                continue
++            break
++        graphemes.append(grapheme)
++    return graphemes
++
++
+ # Ranges of unicode ordinals that produce a 1-cell wide character
+ # This is non-exhaustive, but covers most common Western characters
+ _SINGLE_CELL_UNICODE_RANGES: list[tuple[int, int]] = [
+@@ -32,36 +72,19 @@ _is_single_cell_widths: Callable[[str], bool] = _SINGLE_CELLS.issuperset
+ 
+ @lru_cache(4096)
+ def cached_cell_len(text: str) -> int:
+-    """Get the number of cells required to display text.
+-
+-    This method always caches, which may use up a lot of memory. It is recommended to use
+-    `cell_len` over this method.
+-
+-    Args:
+-        text (str): Text to display.
+-
+-    Returns:
+-        int: Get the number of cells required to display text.
+-    """
++    """Get the number of cells required to display text."""
+     if _is_single_cell_widths(text):
+         return len(text)
+-    return sum(map(get_character_cell_size, text))
++    return sum(get_character_cell_size(g[0]) for g in split_graphemes(text))
+ 
+ 
+ def cell_len(text: str, _cell_len: Callable[[str], int] = cached_cell_len) -> int:
+-    """Get the number of cells required to display text.
+-
+-    Args:
+-        text (str): Text to display.
+-
+-    Returns:
+-        int: Get the number of cells required to display text.
+-    """
++    """Get the number of cells required to display text."""
+     if len(text) < 512:
+         return _cell_len(text)
+     if _is_single_cell_widths(text):
+         return len(text)
+-    return sum(map(get_character_cell_size, text))
++    return sum(get_character_cell_size(g[0]) for g in split_graphemes(text))
+ 
+ 
+ @lru_cache(maxsize=4096)
+@@ -104,24 +127,27 @@ def set_cell_size(text: str, total: int) -> str:
+ 
+     if total <= 0:
+         return ""
+-    cell_size = cell_len(text)
++
++    graphemes = split_graphemes(text)
++    cell_size = sum(get_character_cell_size(g[0]) for g in graphemes)
+     if cell_size == total:
+         return text
+     if cell_size < total:
+         return text + " " * (total - cell_size)
+ 
+     start = 0
+-    end = len(text)
++    end = len(graphemes)
+ 
+     # Binary search until we find the right size
+     while True:
+         pos = (start + end) // 2
+-        before = text[: pos + 1]
+-        before_len = cell_len(before)
+-        if before_len == total + 1 and cell_len(before[-1]) == 2:
+-            return before[:-1] + " "
++        before_graphemes = graphemes[: pos + 1]
++        before_text = "".join(before_graphemes)
++        before_len = sum(get_character_cell_size(g[0]) for g in before_graphemes)
++        if before_len == total + 1 and get_character_cell_size(graphemes[pos][0]) == 2:
++            return "".join(before_graphemes[:-1]) + " "
+         if before_len == total:
+-            return before
++            return before_text
+         if before_len > total:
+             end = pos
+         else:
+@@ -143,6 +169,7 @@ def chop_cells(
+         less than or equal to the available width.
+     """
+     _get_character_cell_size = get_character_cell_size
++    graphemes = split_graphemes(text)
+     lines: list[list[str]] = [[]]
+ 
+     append_new_line = lines.append
+@@ -150,16 +177,16 @@ def chop_cells(
+ 
+     total_width = 0
+ 
+-    for character in text:
+-        cell_width = _get_character_cell_size(character)
++    for grapheme in graphemes:
++        cell_width = _get_character_cell_size(grapheme[0])
+         char_doesnt_fit = total_width + cell_width > width
+ 
+         if char_doesnt_fit:
+-            append_new_line([character])
++            append_new_line([grapheme])
+             append_to_last_line = lines[-1].append
+             total_width = cell_width
+         else:
+-            append_to_last_line(character)
++            append_to_last_line(grapheme)
+             total_width += cell_width
+ 
+     return ["".join(line) for line in lines]

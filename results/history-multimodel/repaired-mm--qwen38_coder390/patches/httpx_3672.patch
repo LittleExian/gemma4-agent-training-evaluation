@@ -1,0 +1,105 @@
+diff --git a/src/httpx/_network.py b/src/httpx/_network.py
+index 5ea9bb5..aafee4e 100644
+--- a/src/httpx/_network.py
++++ b/src/httpx/_network.py
+@@ -160,7 +160,7 @@ class NetworkServer:
+         self._max_workers = 5
+         self._executor = None
+         self._thread = None
+-        self._streams = list[NetworkStream]
++        self._streams: list[NetworkStream] = []
+ 
+     @property
+     def host(self):
+@@ -178,9 +178,12 @@ class NetworkServer:
+     def __exit__(self, exc_type, exc_val, exc_tb):
+         self.listener.close()
+         self._executor.shutdown(wait=True)
++        for stream in self._streams:
++            stream.close()
+ 
+     def _serve(self):
+         while stream := self.listener.accept():
++            self._streams.append(stream)
+             self._executor.submit(self._handler, stream)
+ 
+     def _handler(self, stream):
+diff --git a/src/httpx/_parsers.py b/src/httpx/_parsers.py
+index 830fccd..cbd1e9b 100644
+--- a/src/httpx/_parsers.py
++++ b/src/httpx/_parsers.py
+@@ -80,7 +80,7 @@ class HTTPParser:
+     client.recv_status_line()
+     client.recv_headers()
+     client.recv_body()
+-    client.complete()
++    client.reset()
+     client.close()
+     """
+     def __init__(self, stream: Stream, mode: str) -> None:
+@@ -375,9 +375,13 @@ class HTTPParser:
+             self.recv_state = State.DONE
+         return body
+ 
+-    def complete(self):
++    @property
++    def keep_alive(self) -> bool:
++        return self.send_keep_alive and self.recv_keep_alive
++
++    def reset(self):
+         is_fully_complete = self.send_state == State.DONE and self.recv_state == State.DONE
+-        is_keepalive = self.send_keep_alive and self.recv_keep_alive
++        is_keepalive = self.keep_alive
+ 
+         if not (is_fully_complete and is_keepalive):
+             self.close()
+diff --git a/src/httpx/_pool.py b/src/httpx/_pool.py
+index 7193f8d..64f4fe0 100644
+--- a/src/httpx/_pool.py
++++ b/src/httpx/_pool.py
+@@ -237,7 +237,7 @@ class Connection(Transport):
+ 
+     # Request/response cycle complete...
+     def _complete(self) -> None:
+-        self._parser.complete()
++        self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+     def _close(self) -> None:
+diff --git a/src/httpx/_server.py b/src/httpx/_server.py
+index 95226d9..7a93426 100644
+--- a/src/httpx/_server.py
++++ b/src/httpx/_server.py
+@@ -3,7 +3,7 @@ import logging
+ import time
+ 
+ from ._content import Text
+-from ._parsers import HTTPParser
++from ._parsers import HTTPParser, State
+ from ._request import Request
+ from ._response import Response
+ from ._network import NetworkBackend, sleep
+@@ -89,7 +89,11 @@ class HTTPConnection:
+ 
+     # Start it all over again...
+     def _complete(self):
+-        self._parser.complete
++        if self._parser.keep_alive and self._parser.recv_state == State.RECV_BODY:
++            # Always read the request to completion on keep alives
++            while self._parser.recv_state == State.RECV_BODY:
++                self._recv_body()
++        self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+ 
+@@ -122,5 +126,8 @@ def serve_http(endpoint):
+ 
+ 
+ def run(app):
+-    with serve_http(app) as server:
+-        server.wait()
++    try:
++        with serve_http(app) as server:
++            server.wait()
++    except KeyboardInterrupt:
++        pass

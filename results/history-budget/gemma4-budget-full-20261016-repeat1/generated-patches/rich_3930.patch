@@ -1,0 +1,119 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index a8546227..b7940c36 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -1,3 +1,4 @@
++import unicodedata
+ from __future__ import annotations
+ 
+ from functools import lru_cache
+@@ -27,7 +28,32 @@ _SINGLE_CELLS = frozenset(
+ 
+ # When called with a string this will return True if all
+ # characters are single-cell, otherwise False
+-_is_single_cell_widths: Callable[[str], bool] = _SINGLE_CELLS.issuperset
++def split_graphemes(text: str) -> list[str]:
++    """Split text into grapheme clusters.
++
++    Args:
++        text: The text to split.
++
++    Returns:
++        A list of grapheme clusters.
++    """
++    graphemes = []
++    if not text:
++        return graphemes
++
++    start = 0
++    for i in range(1, len(text)):
++        char = text[i]
++        prev_char = text[i - 1]
++
++        if unicodedata.combining(char) or prev_char == "\u200D" or char == "\u200D":
++            continue
++
++        graphemes.append(text[start:i])
++        start = i
++
++    graphemes.append(text[start:])
++    return graphemes
+ 
+ 
+ @lru_cache(4096)
+@@ -104,28 +130,22 @@ def set_cell_size(text: str, total: int) -> str:
+ 
+     if total <= 0:
+         return ""
+-    cell_size = cell_len(text)
+-    if cell_size == total:
+-        return text
+-    if cell_size < total:
+-        return text + " " * (total - cell_size)
+ 
+-    start = 0
+-    end = len(text)
++    graphemes = split_graphemes(text)
++    current_len = 0
++    result_graphemes = []
+ 
+-    # Binary search until we find the right size
+-    while True:
+-        pos = (start + end) // 2
+-        before = text[: pos + 1]
+-        before_len = cell_len(before)
+-        if before_len == total + 1 and cell_len(before[-1]) == 2:
+-            return before[:-1] + " "
+-        if before_len == total:
+-            return before
+-        if before_len > total:
+-            end = pos
+-        else:
+-            start = pos
++    for g in graphemes:
++        g_len = sum(get_character_cell_size(c) for c in g)
++        if current_len + g_len > total:
++            break
++        result_graphemes.append(g)
++        current_len += g_len
++
++    result = "".join(result_graphemes)
++    if current_len < total:
++        result += " " * (total - current_len)
++    return result
+ 
+ 
+ def chop_cells(
+@@ -142,7 +162,6 @@ def chop_cells(
+         A list of strings such that each string in the list has cell width
+         less than or equal to the available width.
+     """
+-    _get_character_cell_size = get_character_cell_size
+     lines: list[list[str]] = [[]]
+ 
+     append_new_line = lines.append
+@@ -150,17 +169,17 @@ def chop_cells(
+ 
+     total_width = 0
+ 
+-    for character in text:
+-        cell_width = _get_character_cell_size(character)
+-        char_doesnt_fit = total_width + cell_width > width
++    for grapheme in split_graphemes(text):
++        g_width = sum(get_character_cell_size(c) for c in grapheme)
++        char_doesnt_fit = total_width + g_width > width
+ 
+         if char_doesnt_fit:
+-            append_new_line([character])
++            append_new_line([grapheme])
+             append_to_last_line = lines[-1].append
+-            total_width = cell_width
++            total_width = g_width
+         else:
+-            append_to_last_line(character)
+-            total_width += cell_width
++            append_to_last_line(grapheme)
++            total_width += g_width
+ 
+     return ["".join(line) for line in lines]
+ 

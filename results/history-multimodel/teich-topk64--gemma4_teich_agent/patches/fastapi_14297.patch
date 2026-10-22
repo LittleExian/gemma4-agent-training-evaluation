@@ -1,0 +1,70 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 7196a619..f370a86b 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -17,7 +17,7 @@ from typing import (
+ 
+ from fastapi._compat import may_v1, shared
+ from fastapi.openapi.constants import REF_TEMPLATE
+-from fastapi.types import IncEx, ModelNameMap
++from fastapi.types import IncEx, ModelNameMap, UnionType
+ from pydantic import BaseModel, TypeAdapter, create_model
+ from pydantic import PydanticSchemaGenerationError as PydanticSchemaGenerationError
+ from pydantic import PydanticUndefinedAnnotation as PydanticUndefinedAnnotation
+@@ -370,7 +370,16 @@ def copy_field_info(*, field_info: FieldInfo, annotation: Any) -> FieldInfo:
+ 
+ 
+ def serialize_sequence_value(*, field: ModelField, value: Any) -> Sequence[Any]:
+-    origin_type = get_origin(field.field_info.annotation) or field.field_info.annotation
++    annotation = field.field_info.annotation
++    origin_type = get_origin(annotation)
++    if origin_type is Union or origin_type is UnionType:
++        for arg in get_args(annotation):
++            arg_origin = get_origin(arg) or arg
++            if lenient_issubclass(arg_origin, shared.sequence_types):
++                origin_type = arg_origin
++                break
++    else:
++        origin_type = origin_type or annotation
+     assert issubclass(origin_type, shared.sequence_types)  # type: ignore[arg-type]
+     return shared.sequence_annotation_to_type[origin_type](value)  # type: ignore[no-any-return]
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..83e9502f
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,33 @@
++from typing import List, Optional
++
++from fastapi import FastAPI, File
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++
++@app.post("/files")
++async def upload_files(files: Optional[List[bytes]] = File(None)):
++    if files is None:
++        return {"files_count": 0}
++    return {"files_count": len(files), "sizes": [len(f) for f in files]}
++
++
++def test_optional_bytes_list():
++    client = TestClient(app)
++    response = client.post(
++        "/files",
++        files=[("files", b"content1"), ("files", b"content2")],
++    )
++    assert response.status_code == 200
++    assert response.json() == {"files_count": 2, "sizes": [8, 8]}
++
++if __name__ == "__main__":
++    try:
++        test_optional_bytes_list()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

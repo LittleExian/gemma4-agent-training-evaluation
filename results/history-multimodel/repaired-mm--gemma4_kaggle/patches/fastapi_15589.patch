@@ -1,0 +1,143 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 7c6558c69..5992c6592 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -829,6 +829,8 @@ def request_params_to_args(
+ 
+     for key in received_params.keys():
+         if key not in processed_keys:
++            if isinstance(received_params, Headers) and default_convert_underscores and "_" in key:
++                continue
+             if isinstance(received_params, (ImmutableMultiDict, Headers)):
+                 value = received_params.getlist(key)
+                 if isinstance(value, list) and (len(value) == 1):
+diff --git a/repro_model.py b/repro_model.py
+new file mode 100644
+index 000000000..eee75bdfd
+--- /dev/null
++++ b/repro_model.py
+@@ -0,0 +1,29 @@
++from fastapi import FastAPI, Header
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++
++app = FastAPI()
++
++class MyHeaders(BaseModel):
++    my_header: str
++
++@app.get("/")
++async def read_headers(headers: MyHeaders = Header()):
++    return {"my_header": headers.my_header}
++
++client = TestClient(app)
++
++def test_underscore_header_with_model():
++    # This should NOT be accepted if convert_underscores=True (default)
++    response = client.get("/", headers={"my_header": "value"})
++    assert response.status_code == 422, "Should not accept underscored header"
++
++def test_hyphen_header_with_model():
++    # This SHOULD be accepted
++    response = client.get("/", headers={"my-header": "value"})
++    assert response.status_code == 200
++    assert response.json() == {"my_header": "value"}
++
++if __name__ == "__main__":
++    import pytest
++    pytest.main([__file__])
+diff --git a/repro_model.py` b/repro_model.py`
+new file mode 100644
+index 000000000..eee75bdfd
+--- /dev/null
++++ b/repro_model.py`
+@@ -0,0 +1,29 @@
++from fastapi import FastAPI, Header
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++
++app = FastAPI()
++
++class MyHeaders(BaseModel):
++    my_header: str
++
++@app.get("/")
++async def read_headers(headers: MyHeaders = Header()):
++    return {"my_header": headers.my_header}
++
++client = TestClient(app)
++
++def test_underscore_header_with_model():
++    # This should NOT be accepted if convert_underscores=True (default)
++    response = client.get("/", headers={"my_header": "value"})
++    assert response.status_code == 422, "Should not accept underscored header"
++
++def test_hyphen_header_with_model():
++    # This SHOULD be accepted
++    response = client.get("/", headers={"my-header": "value"})
++    assert response.status_code == 200
++    assert response.json() == {"my_header": "value"}
++
++if __name__ == "__main__":
++    import pytest
++    pytest.main([__file__])
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 000000000..b42d541af
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,54 @@
++from fastapi import FastAPI, Header
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++@app.get("/")
++async def read_header(my_header: str = Header(None)):
++    return {"my_header": my_header}
++
++client = TestClient(app)
++
++def test_underscore_header_accepted():
++    # By default convert_underscores=True. 
++    # If we send 'my_header', it should NOT be accepted.
++    # But if it IS accepted, then the bug exists.
++    response = client.get("/", headers={"my_header": "value"})
++    print(f"Response with my_header: {response.json()}")
++    assert response.json()["my_header"] is None
++
++def test_hyphen_header_accepted():
++    # By default convert_underscores=True.
++    # If we send 'my-header', it SHOULD be accepted.
++    response = client.get("/", headers={"my-header": "value"})
++    print(f"Response with my-header: {response.json()}")
++    assert response.json()["my_header"] == "value"
++
++def test_underscore_header_accepted_with_convert_underscores_false():
++    # With convert_underscores=False, 'my_header' SHOULD be accepted.
++    @app.get("/false")
++    async def read_header_false(my_header: str = Header(None, convert_underscores=False)):
++        return {"my_header": my_header}
++    
++    response = client.get("/false", headers={"my_header": "value"})
++    print(f"Response with my_header (convert_underscores=False): {response.json()}")
++    assert response.json()["my_header"] == "value"
++
++if __name__ == "__main__":
++    try:
++        test_underscore_header_accepted()
++        print("test_underscore_header_accepted passed")
++    except AssertionError as e:
++        print(f"test_underscore_header_accepted failed: {e}")
++
++    try:
++        test_hyphen_header_accepted()
++        print("test_hyphen_header_accepted passed")
++    except AssertionError as e:
++        print(f"test_hyphen_header_accepted failed: {e}")
++
++    try:
++        test_underscore_header_accepted_with_convert_underscores_false()
++        print("test_underscore_header_accepted_with_convert_underscores_false passed")
++    except AssertionError as e:
++        print(f"test_underscore_header_accepted_with_convert_underscores_false failed: {e}")

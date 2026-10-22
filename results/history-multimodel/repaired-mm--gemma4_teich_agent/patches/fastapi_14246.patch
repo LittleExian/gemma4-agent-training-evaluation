@@ -1,0 +1,78 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index fb2c691d..010693ae 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -217,10 +217,24 @@ def get_definitions(
+         f for f in flat_model_fields if f.type_ not in input_types
+     }
+ 
+-    inputs = [
+-        (field, override_mode or field.mode, field._type_adapter.core_schema)
+-        for field in list(fields) + list(unique_flat_model_fields)
+-    ]
++    if separate_input_output_schemas:
++        inputs = []
++        for field in fields:
++            if lenient_issubclass(field.type_, (BaseModel, Enum)):
++                inputs.append((field, "validation", field._type_adapter.core_schema))
++                inputs.append((field, "serialization", field._type_adapter.core_schema))
++            else:
++                inputs.append((field, field.mode, field._type_adapter.core_schema))
++        for model in flat_models:
++            if not any(field.type_ is model for field in fields):
++                field = ModelField(field_info=FieldInfo(annotation=model), name=model.__name__)
++                inputs.append((field, "validation", field._type_adapter.core_schema))
++                inputs.append((field, "serialization", field._type_adapter.core_schema))
++    else:
++        inputs = [
++            (field, override_mode or field.mode, field._type_adapter.core_schema)
++            for field in list(fields) + list(unique_flat_model_fields)
++        ]
+     field_mapping, definitions = schema_generator.generate_definitions(inputs=inputs)
+     for item_def in cast(Dict[str, Dict[str, Any]], definitions).values():
+         if "description" in item_def:
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..268f9e0c
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,39 @@
++from fastapi import FastAPI
++from fastapi.openapi.utils import get_openapi
++from pydantic import BaseModel
++import json
++
++class NestedModel(BaseModel):
++    foo: str
++
++class InputModel(BaseModel):
++    nested: NestedModel
++
++class OutputModel(BaseModel):
++    nested: NestedModel
++
++app = FastAPI()
++
++@app.post("/test", response_model=OutputModel)
++def test(input: InputModel):
++    return input
++
++openapi_schema = get_openapi(
++    title="Test",
++    version="1.0.0",
++    routes=app.routes,
++    separate_input_output_schemas=True,
++)
++
++schemas = openapi_schema["components"]["schemas"]
++print(json.dumps(schemas, indent=2))
++
++# Check if NestedModel has both validation and serialization schemas
++# If separate_input_output_schemas is True, we expect NestedModel-validation and NestedModel-serialization (or similar)
++# Actually, the names are determined by model_name_map.
++
++# Let's see what the names are.
++# For NestedModel, we expect something like "NestedModel-validation" and "NestedModel-serialization"
++# if separate_input_output_schemas is True.
++
++# Wait, let's check the names in the output.

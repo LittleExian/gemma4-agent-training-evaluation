@@ -1,0 +1,136 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index dc663f54..9be37c3f 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -872,20 +872,18 @@ async def _extract_form_body(
+     received_body: FormData,
+ ) -> Dict[str, Any]:
+     values = {}
+-    first_field = body_fields[0]
+-    first_field_info = first_field.field_info
+ 
+     for field in body_fields:
+         value = _get_multidict_value(field, received_body)
+         if (
+-            isinstance(first_field_info, params.File)
++            isinstance(field.field_info, params.File)
+             and is_bytes_field(field)
+             and isinstance(value, UploadFile)
+         ):
+             value = await value.read()
+         elif (
+             is_bytes_sequence_field(field)
+-            and isinstance(first_field_info, params.File)
++            and isinstance(field.field_info, params.File)
+             and value_is_sequence(value)
+         ):
+             # For types
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..f56b8b28
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,47 @@
++
++import asyncio
++from fastapi import FastAPI, File, Form, UploadFile
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++from typing import List
++
++app = FastAPI()
++
++@app.post("/test-file-after-form")
++async def test_file_after_form(form_data: str = Form(...), file: bytes = File(...)):
++    return {"form_data": form_data, "file_len": len(file)}
++
++@app.post("/test-form-after-file")
++async def test_form_after_file(file: bytes = File(...), form_data: str = Form(...)):
++    return {"form_data": form_data, "file_len": len(file)}
++
++client = TestClient(app)
++
++def test_repro():
++    # Case 1: File follows Form
++    response = client.post(
++        "/test-file-after-form",
++        data={"form_data": "hello"},
++        files={"file": b"world"}
++    )
++    print(f"Case 1 (File after Form) status: {response.status_code}")
++    assert response.status_code == 200, f"Case 1 failed with status {response.status_code}: {response.text}"
++    assert response.json() == {"form_data": "hello", "file_len": 5}
++
++    # Case 2: Form follows File
++    response = client.post(
++        "/test-form-after-file",
++        data={"form_data": "hello"},
++        files={"file": b"world"}
++    )
++    print(f"Case 2 (Form after File) status: {response.status_code}")
++    assert response.status_code == 200, f"Case 2 failed with status {response.status_code}: {response.text}"
++    assert response.json() == {"form_data": "hello", "file_len": 5}
++
++if __name__ == "__main__":
++    try:
++        test_repro()
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        exit(1)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..825dbe20
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,50 @@
++from fastapi import FastAPI, Form, File, UploadFile
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.post("/test_order_1")
++async def test_order_1(a: str = Form(...), b: bytes = File(...)):
++    return {"a": a, "b_len": len(b)}
++
++@app.post("/test_order_2")
++async def test_order_2(b: bytes = File(...), a: str = Form(...)):
++    return {"a": a, "b_len": len(b)}
++
++client = TestClient(app)
++
++def test_order_1():
++    # File after Form - this should fail currently
++    response = client.post(
++        "/test_order_1",
++        data={"a": "hello"},
++        files={"b": ("test.txt", b"world")}
++    )
++    print(f"Order 1 response: {response.status_code} {response.text}")
++    assert response.status_code == 200
++    assert response.json() == {"a": "hello", "b_len": 5}
++
++def test_order_2():
++    # Form after File - this should work
++    response = client.post(
++        "/test_order_2",
++        data={"a": "hello"},
++        files={"b": ("test.txt", b"world")}
++    )
++    print(f"Order 2 response: {response.status_code} {response.text}")
++    assert response.status_code == 200
++    assert response.json() == {"a": "hello", "b_len": 5}
++
++if __name__ == "__main__":
++    try:
++        test_order_1()
++        print("test_order_1 passed")
++    except Exception as e:
++        print(f"test_order_1 failed: {e}")
++
++    try:
++        test_order_2()
++        print("test_order_2 passed")
++    except Exception as e:
++        print(f"test_order_2 failed: {e}")

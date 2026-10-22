@@ -1,0 +1,124 @@
+diff --git a/inspect_cache_keys.py b/inspect_cache_keys.py
+new file mode 100644
+index 00000000..07793665
+--- /dev/null
++++ b/inspect_cache_keys.py
+@@ -0,0 +1,43 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer
++from fastapi.dependencies.utils import get_dependant
++from fastapi.dependencies.models import Dependant
++
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
++
++def parent_with_scopes(token: str = Security(oauth2_scheme, scopes=["scope1"])):
++    return token
++
++app = FastAPI()
++
++# Simulate /reversed
++# root_reversed(token: str = Depends(oauth2_scheme), parent: str = Depends(parent_with_scopes))
++
++# We need to simulate how FastAPI creates Dependants.
++# For simplicity, let's just use get_dependant.
++
++dep_a = get_dependant(
++    path="/reversed",
++    call=oauth2_scheme,
++    name="token",
++    own_oauth_scopes=[],
++    parent_oauth_scopes=[],
++)
++
++dep_parent = get_dependant(
++    path="/reversed",
++    call=parent_with_scopes,
++    name="parent",
++    own_oauth_scopes=[],
++    parent_oauth_scopes=[],
++)
++
++# Now dep_parent will have dep_c as a dependency
++dep_c = dep_parent.dependencies[0]
++
++print(f"dep_a cache_key: {dep_a.cache_key}")
++print(f"dep_c cache_key: {dep_c.cache_key}")
++print(f"dep_a._uses_scopes: {dep_a._uses_scopes}")
++print(f"dep_c._uses_scopes: {dep_c._uses_scopes}")
++print(f"dep_a.oauth_scopes: {dep_a.oauth_scopes}")
++print(f"dep_c.oauth_scopes: {dep_c.oauth_scopes}")
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..0dd07fab
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,35 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer
++from fastapi.openapi.utils import get_openapi_security_definitions
++from fastapi.dependencies.utils import get_flat_dependant
++from fastapi.dependencies.models import Dependant
++from fastapi.routing import APIRoute
++
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
++
++def parent_with_scopes(s=Security(oauth2_scheme, scopes=[])):
++    return "parent"
++
++app = FastAPI()
++
++@app.get("/")
++async def root(
++    a=Security(parent_with_scopes, scopes=["scope1"]),
++    b=Security(oauth2_scheme, scopes=[])
++):
++    return {"message": "Hello World"}
++
++@app.get("/reversed")
++async def root_reversed(
++    a=Security(oauth2_scheme, scopes=[]),
++    b=Security(parent_with_scopes, scopes=["scope1"])
++):
++    return {"message": "Hello World"}
++
++for route in app.routes:
++    if isinstance(route, APIRoute):
++        print(f"Route: {route.path}")
++        dependant = route.dependant
++        flat_dependant = get_flat_dependant(dependant, skip_repeats=True)
++        security_definitions, operation_security = get_openapi_security_definitions(flat_dependant)
++        print(f"Operation security: {operation_security}")
+diff --git a/reproduce_bug.py b/reproduce_bug.py
+new file mode 100644
+index 00000000..25c95fca
+--- /dev/null
++++ b/reproduce_bug.py
+@@ -0,0 +1,28 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer
++import json
++
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
++
++def parent_with_scopes(token: str = Security(oauth2_scheme, scopes=["scope1"])):
++    return token
++
++app = FastAPI()
++
++@app.get("/")
++def root(
++    token: str = Security(oauth2_scheme, scopes=["scope1"]),
++    parent: str = Depends(parent_with_scopes),
++):
++    return {"token": token, "parent": parent}
++
++@app.get("/reversed")
++def root_reversed(
++    token: str = Depends(oauth2_scheme),
++    parent: str = Depends(parent_with_scopes),
++):
++    return {"token": token, "parent": parent}
++
++if __name__ == "__main__":
++    openapi_schema = app.openapi()
++    print(json.dumps(openapi_schema, indent=2))

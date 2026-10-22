@@ -1,0 +1,186 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index a8546227..fe4d2280 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import unicodedata
+ from functools import lru_cache
+ from typing import Callable
+ 
+@@ -30,6 +31,63 @@ _SINGLE_CELLS = frozenset(
+ _is_single_cell_widths: Callable[[str], bool] = _SINGLE_CELLS.issuperset
+ 
+ 
++def split_graphemes(text: str) -> list[str]:
++    '''Split text into a list of grapheme clusters.'''
++    graphemes = []
++    if not text:
++        return graphemes
++
++    current_grapheme = ''
++    ris_count = 0
++
++    for char in text:
++        is_ris = '\U0001f1e6' <= char <= '\U0001f1ff'
++        is_combining = unicodedata.combining(char) > 0
++        is_zwj = char == '‍'
++        is_variation_selector = '︀' <= char <= '️'
++
++        if current_grapheme == '':
++            current_grapheme = char
++            if is_ris:
++                ris_count = 1
++        elif is_combining or is_zwj or is_variation_selector:
++            current_grapheme += char
++        elif is_ris:
++            if ris_count % 2 == 1:
++                current_grapheme += char
++                ris_count += 1
++            else:
++                graphemes.append(current_grapheme)
++                current_grapheme = char
++                ris_count = 1
++        else:
++            graphemes.append(current_grapheme)
++            current_grapheme = char
++            ris_count = 0 if not is_ris else 1
++
++    graphemes.append(current_grapheme)
++    return graphemes
++            if is_ris:
++                ris_count = 1
++        elif is_combining or is_zwj or is_variation_selector:
++            current_grapheme += char
++        elif is_ris:
++            if ris_count % 2 == 1:
++                current_grapheme += char
++                ris_count += 1
++            else:
++                graphemes.append(current_grapheme)
++                current_grapheme = char
++                ris_count = 1
++        else:
++            graphemes.append(current_grapheme)
++            current_grapheme = char
++            ris_count = 0 if not is_ris else 1
++
++    graphemes.append(current_grapheme)
++    return graphemes
++
++
+ @lru_cache(4096)
+ def cached_cell_len(text: str) -> int:
+     """Get the number of cells required to display text.
+@@ -110,16 +168,17 @@ def set_cell_size(text: str, total: int) -> str:
+     if cell_size < total:
+         return text + " " * (total - cell_size)
+ 
++    graphemes = split_graphemes(text)
+     start = 0
+-    end = len(text)
++    end = len(graphemes)
+ 
+     # Binary search until we find the right size
+     while True:
+         pos = (start + end) // 2
+-        before = text[: pos + 1]
++        before = "".join(graphemes[: pos + 1])
+         before_len = cell_len(before)
+-        if before_len == total + 1 and cell_len(before[-1]) == 2:
+-            return before[:-1] + " "
++        if before_len == total + 1 and pos < len(graphemes) and cell_len(graphemes[pos]) == 2:
++            return "".join(graphemes[:pos]) + " "
+         if before_len == total:
+             return before
+         if before_len > total:
+@@ -150,16 +209,17 @@ def chop_cells(
+ 
+     total_width = 0
+ 
+-    for character in text:
+-        cell_width = _get_character_cell_size(character)
++    graphemes = split_graphemes(text)
++    for grapheme in graphemes:
++        cell_width = cell_len(grapheme)
+         char_doesnt_fit = total_width + cell_width > width
+ 
+         if char_doesnt_fit:
+-            append_new_line([character])
++            append_new_line([grapheme])
+             append_to_last_line = lines[-1].append
+             total_width = cell_width
+         else:
+-            append_to_last_line(character)
++            append_to_last_line(grapheme)
+             total_width += cell_width
+ 
+     return ["".join(line) for line in lines]
+diff --git a/verify_graphemes.py b/verify_graphemes.py
+new file mode 100644
+index 00000000..922c5e8f
+--- /dev/null
++++ b/verify_graphemes.py
+@@ -0,0 +1,61 @@
++
++import unicodedata
++from rich.cells import split_graphemes, cell_len, set_cell_size, chop_cells
++
++def test_split_graphemes():
++    # Basic
++    assert split_graphemes("abc") == ["a", "b", "c"]
++    # Combining mark
++    assert split_graphemes("a\u0301") == ["a\u0301"]
++    # Emoji with modifier
++    assert split_graphemes("👋🏾") == ["👋🏾"]
++    # ZWJ sequence
++    assert split_graphemes("👨‍👩‍👧‍👦") == ["👨‍👩‍👧‍👦"]
++    # RIS (Flags)
++    assert split_graphemes("🇺🇸") == ["🇺🇸"]
++    assert split_graphemes("🇺🇸🇺🇸") == ["🇺🇸", "🇺🇸"]
++    assert split_graphemes("🇺🇸🇺🇸🇺🇸") == ["🇺🇸", "🇺🇸🇺🇸"] # Wait, RIS should be pairs. 🇺🇸 is 2 RIS. 🇺🇸🇺🇸🇺🇸 is 6 RIS.
++    # Let's check RIS properly.
++    # 🇺🇸 is U+1F1FA U+1F1F8
++    # 🇺🇸🇺🇸 is U+1F1FA U+1F1F8 U+1F1FA U+1F1F8
++    # 🇺🇸🇺🇸🇺🇸 is U+1F1FA U+1F1F8 U+1F1FA U+1F1F8 U+1F1FA U+1F1F8
++    # So 🇺🇸🇺🇸🇺🇸 should be ["🇺🇸", "🇺🇸", "🇺🇸"]
++    
++    # Let's test with actual codepoints
++    ris1 = "\U0001f1fa"
++    ris2 = "\U0001f1f8"
++    assert split_graphemes(ris1 + ris2) == [ris1 + ris2]
++    assert split_graphemes(ris1 + ris2 + ris1 + ris2) == [ris1 + ris2, ris1 + ris2]
++    assert split_graphemes(ris1 + ris2 + ris1) == [ris1 + ris2, ris1]
++
++def test_set_cell_size():
++    # Wide character
++    assert set_cell_size("👋", 1) == " "
++    assert set_cell_size("👋", 2) == "👋"
++    # Grapheme cluster
++    # 👋🏾 is width 2.
++    assert set_cell_size("👋🏾", 1) == " "
++    assert set_cell_size("👋🏾", 2) == "👋🏾"
++    # Combining mark
++    # a\u0301 is width 1.
++    assert set_cell_size("a\u0301", 1) == "a\u0301"
++
++def test_chop_cells():
++    # Wide character
++    assert chop_cells("👋👋", 2) == ["👋", "👋"]
++    # Grapheme cluster
++    # 👋🏾 is width 2.
++    assert chop_cells("👋🏾👋🏾", 2) == ["👋🏾", "👋🏾"]
++
++if __name__ == "__main__":
++    try:
++        test_split_graphemes()
++        print("test_split_graphemes passed")
++        test_set_cell_size()
++        print("test_set_cell_size passed")
++        test_chop_cells()
++        print("test_chop_cells passed")
++        print("All tests passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)

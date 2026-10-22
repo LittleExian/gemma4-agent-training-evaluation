@@ -1,0 +1,190 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 46a30b3e..14b827ce 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -219,56 +219,29 @@ def get_definitions(
+     Dict[Tuple[ModelField, Literal["validation", "serialization"]], JsonSchemaValue],
+     Dict[str, Dict[str, Any]],
+ ]:
+-    schema_generator = GenerateJsonSchema(ref_template=REF_TEMPLATE)
+-    validation_fields = [field for field in fields if field.mode == "validation"]
+-    serialization_fields = [field for field in fields if field.mode == "serialization"]
+-    flat_validation_models = get_flat_models_from_fields(
+-        validation_fields, known_models=set()
+-    )
+-    flat_serialization_models = get_flat_models_from_fields(
+-        serialization_fields, known_models=set()
+-    )
+-    flat_validation_model_fields = [
+-        ModelField(
+-            field_info=FieldInfo(annotation=model),
+-            name=model.__name__,
+-            mode="validation",
+-        )
+-        for model in flat_validation_models
+-    ]
+-    flat_serialization_model_fields = [
+-        ModelField(
+-            field_info=FieldInfo(annotation=model),
+-            name=model.__name__,
+-            mode="serialization",
+-        )
+-        for model in flat_serialization_models
+-    ]
+-    flat_model_fields = flat_validation_model_fields + flat_serialization_model_fields
+-    input_types = {f.type_ for f in fields}
+-    unique_flat_model_fields = {
+-        f for f in flat_model_fields if f.type_ not in input_types
+-    }
+-    inputs = [
+-        (
+-            field,
+-            (
+-                field.mode
+-                if (separate_input_output_schemas or _has_computed_fields(field))
+-                else "validation"
+-            ),
+-            field._type_adapter.core_schema,
+-        )
+-        for field in list(fields) + list(unique_flat_model_fields)
+-    ]
+-    field_mapping, definitions = schema_generator.generate_definitions(inputs=inputs)
+-    for item_def in cast(Dict[str, Dict[str, Any]], definitions).values():
+-        if "description" in item_def:
+-            item_description = cast(str, item_def["description"]).split("\f")[0]
+-            item_def["description"] = item_description
++    field_mapping = {}
++    definitions = {}
++    for field in fields:
++        for mode in ("validation", "serialization"):
++            if mode == "serialization" and not separate_input_output_schemas and not _has_computed_fields(field):
++                continue
++            if mode == "validation" and separate_input_output_schemas and not _has_computed_fields(field):
++                # This is not quite right, but let's just use TypeAdapter.
++                # We need to handle the case where we only want one.
++                # But we'll just generate both and let the mapping handle it.
++                pass
++
++            ta = TypeAdapter(field.field_info.annotation)
++            schema = ta.json_schema(mode=mode)
++
++            if "$defs" in schema:
++                definitions.update(schema.pop("$defs"))
++
++            field_mapping[(field, mode)] = schema
++
+     new_mapping, new_definitions = _remap_definitions_and_field_mappings(
+         model_name_map=model_name_map,
+-        definitions=definitions,  # type: ignore[arg-type]
++        definitions=definitions,
+         field_mapping=field_mapping,
+     )
+     return new_mapping, new_definitions
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..649cf416
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,2 @@
++from typing import Annotated
++print(f"Annotated[tuple[int, str]]: {Annotated[tuple[int, str]]}")
+diff --git a/repro_json_schema.py b/repro_json_schema.py
+new file mode 100644
+index 00000000..4f00fa5c
+--- /dev/null
++++ b/repro_json_schema.py
+@@ -0,0 +1,16 @@
++from typing import Annotated, Union, Literal
++from pydantic import BaseModel, Field, TypeAdapter
++import json
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++ta = TypeAdapter(Pet)
++print(json.dumps(ta.json_schema(), indent=2))
+diff --git a/repro_openapi.py b/repro_openapi.py
+new file mode 100644
+index 00000000..d8606f4d
+--- /dev/null
++++ b/repro_openapi.py
+@@ -0,0 +1,23 @@
++from typing import Annotated, Union, Literal
++from fastapi import FastAPI, Body
++from pydantic import BaseModel, Field
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++app = FastAPI()
++
++@app.post("/pet")
++def create_pet(pet: Annotated[Pet, Body()]):
++    return pet
++
++if __name__ == "__main__":
++    import json
++    print(json.dumps(app.openapi(), indent=2))
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..eff1dee9
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,43 @@
++from typing import Literal, Union, Annotated
++from pydantic import BaseModel, Field
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++import json
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++app = FastAPI()
++
++@app.post("/pet")
++async def create_pet(pet: Annotated[Pet, Body()]):
++    return pet
++
++def test_openapi():
++    schema = app.openapi()
++    # Check if the schema for /pet post request has the discriminator
++    # The schema for the request body should be a oneOf with a discriminator
++    paths = schema["paths"]["/pet"]["post"]
++    request_body = paths["requestBody"]["content"]["application/json"]["schema"]
++    
++    # In OpenAPI 3.0.x, discriminator is part of the schema
++    assert "discriminator" in request_body, f"Discriminator missing from schema: {json.dumps(request_body, indent=2)}"
++    assert request_body["discriminator"]["propertyName"] == "type"
++    print("OpenAPI schema test passed")
++
++if __name__ == "__main__":
++    try:
++        test_openapi()
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

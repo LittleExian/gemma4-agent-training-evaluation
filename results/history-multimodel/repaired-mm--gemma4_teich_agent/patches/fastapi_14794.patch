@@ -1,0 +1,82 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index fc5dfed8..883f9b74 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -449,7 +449,7 @@ def analyze_param(
+         depends = dataclasses.replace(depends, dependency=type_annotation)
+ 
+     # Handle non-param type annotations like Request
+-    if lenient_issubclass(
++    if depends is None and lenient_issubclass(
+         type_annotation,
+         (
+             Request,
+@@ -460,7 +460,6 @@ def analyze_param(
+             SecurityScopes,
+         ),
+     ):
+-        assert depends is None, f"Cannot specify `Depends` for type {type_annotation!r}"
+         assert field_info is None, (
+             f"Cannot specify FastAPI annotation for type {type_annotation!r}"
+         )
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..f159454e
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,55 @@
++from typing import Annotated
++from fastapi import FastAPI, Depends, Response
++from fastapi.testclient import TestClient
++import pytest
++
++def modify_response(response: Response):
++    response.headers["X-Custom"] = "custom"
++    return response
++
++app = FastAPI()
++
++@app.get("/annotated")
++def endpoint_annotated(response: Annotated[Response, Depends(modify_response)]):
++    return {"message": "hello annotated"}
++
++@app.get("/default")
++def endpoint_default(response: Response = Depends(modify_response)):
++    return {"message": "hello default"}
++
++@app.get("/regular")
++def endpoint_regular(response: Response):
++    return {"message": "hello regular"}
++
++client = TestClient(app)
++
++def test_response_dependency_annotated():
++    response = client.get("/annotated")
++    assert response.status_code == 200
++    assert response.headers["X-Custom"] == "custom"
++
++def test_response_dependency_default():
++    response = client.get("/default")
++    assert response.status_code == 200
++    assert response.headers["X-Custom"] == "custom"
++
++def test_response_dependency_regular():
++    response = client.get("/regular")
++    assert response.status_code == 200
++    # Regular response injection should not have X-Custom header
++    assert "X-Custom" not in response.headers
++
++if __name__ == "__main__":
++    try:
++        test_response_dependency_annotated()
++        print("Annotated test passed!")
++        test_response_dependency_default()
++        print("Default test passed!")
++        test_response_dependency_regular()
++        print("Regular test passed!")
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

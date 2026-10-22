@@ -1,0 +1,159 @@
+diff --git a/fastapi/__init__.py b/fastapi/__init__.py
+index aac0176b..c0faad43 100644
+--- a/fastapi/__init__.py
++++ b/fastapi/__init__.py
+@@ -20,6 +20,7 @@ from .param_functions import Query as Query
+ from .param_functions import Security as Security
+ from .requests import Request as Request
+ from .responses import Response as Response
++from .responses import SSEResponse as SSEResponse
+ from .routing import APIRouter as APIRouter
+ from .websockets import WebSocket as WebSocket
+ from .websockets import WebSocketDisconnect as WebSocketDisconnect
+diff --git a/fastapi/responses.py b/fastapi/responses.py
+index 5b1154c0..f17fa70e 100644
+--- a/fastapi/responses.py
++++ b/fastapi/responses.py
+@@ -1,4 +1,4 @@
+-from typing import Any
++from typing import Any, AsyncIterable
+ 
+ from fastapi.exceptions import FastAPIDeprecationWarning
+ from starlette.responses import FileResponse as FileResponse  # noqa
+@@ -82,3 +82,136 @@ class ORJSONResponse(JSONResponse):
+         return orjson.dumps(
+             content, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY
+         )
++
++
++class SSEResponse(Response):
++    """Server-Sent Events (SSE) response for streaming events to the client.
++
++    This response class implements the Server-Sent Events format as defined in
++    [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html) and the
++    [SSE specification](https://html.spec.whatwg.org/multipage/server-sent-events.html).
++
++    SSE messages are formatted as:
++    ```
++    data: <content>
++
++    event: <event-name>
++
++    id: <event-id>
++    ```
++
++    Args:
++        content: An async iterable of SSE events. Each event can be a dict with
++            keys like 'data', 'event', 'id', 'retry', etc.
++        status_code: HTTP status code (default: 200).
++        headers: Optional headers to include in the response.
++        media_type: Media type (default: "text/event-stream").
++        background: Optional background task to run after the response is sent.
++
++    Example:
++        ```python
++        from fastapi import FastAPI
++        from fastapi.responses import SSEResponse
++
++        app = FastAPI()
++
++        @app.get("/stream")
++        async def stream_events():
++            async def event_generator():
++                for i in range(5):
++                    yield {"data": f"Event {i}"}
++                yield {"data": "Done"}
++
++            return SSEResponse(event_generator())
++
++        return SSEResponse(event_generator())
++        ```
++    """
++
++    media_type = "text/event-stream"
++
++    def __init__(
++        self,
++        content: AsyncIterable[dict[str, Any]],
++        status_code: int = 200,
++        headers: dict[str, str] | None = None,
++        media_type: str | None = None,
++        background: Any | None = None,
++    ) -> None:
++        self.body_iterator = content
++        self.status_code = status_code
++        self.media_type = self.media_type if media_type is None else media_type
++        self.background = background
++        self.init_headers(headers)
++
++    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
++        """Handle the ASGI scope and stream the response."""
++        from starlette.concurrency import iterate_in_threadpool
++
++        # Check if content is already an async iterable
++        if not isinstance(self.body_iterator, AsyncIterable):
++            self.body_iterator = iterate_in_threadpool(self.body_iterator)
++
++        # Set SSE-specific headers
++        self.headers.setdefault("Cache-Control", "no-cache")
++        self.headers.setdefault("Connection", "keep-alive")
++        self.headers.setdefault("X-Accel-Buffering", "no")
++
++        await send(
++            {
++                "type": "http.response.start",
++                "status": self.status_code,
++                "headers": self.raw_headers,
++            }
++        )
++
++        async for event in self.body_iterator:
++            if not isinstance(event, dict):
++                raise TypeError("SSE events must be dictionaries")
++            self._format_and_send_event(event)
++
++        await send({"type": "http.response.body", "body": b"", "more_body": False})
++
++        if self.background is not None:
++            await self.background()
++
++    def _format_and_send_event(self, event: dict[str, Any]) -> None:
++        """Format an event dictionary as SSE and send it."""
++        lines = []
++
++        # Handle id field
++        if "id" in event:
++            lines.append(f"id: {event['id']}")
++
++        # Handle event field
++        if "event" in event:
++            lines.append(f"event: {event['event']}")
++
++        # Handle data field
++        if "data" in event:
++            data = event["data"]
++            if data is not None:
++                # Escape newlines in data
++                data = str(data).replace("\n", "\\n")
++                lines.append(f"data: {data}")
++
++        # Add empty line to end the event
++        lines.append("")
++
++        # Join with newlines and encode
++        sse_message = "\n".join(lines).encode("utf-8")
++
++        # Send the SSE message
++        self._send_chunk(sse_message)
++
++    async def _send_impl(self, chunk: bytes) -> None:
++        """Send a chunk of data to the client."""
++        await send({"type": "http.response.body", "body": chunk, "more_body": True})
++
++    async def _send_chunk(self, chunk: bytes) -> None:
++        """Send a chunk of data to the client."""
++        await self._send_chunk_impl(chunk)
++
++    async def _send_chunk_impl(self, chunk: bytes) -> None:
++        """Internal implementation for sending chunks."""
++        await self._send_impl(chunk)

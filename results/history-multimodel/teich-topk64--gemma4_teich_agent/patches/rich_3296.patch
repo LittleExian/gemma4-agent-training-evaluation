@@ -1,0 +1,117 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..bda18130
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,50 @@
++from rich.console import Console
++from rich.syntax import Syntax
++from rich.padding import Padding
++from rich.segment import Segment
++
++def test_syntax_padding_background():
++    console = Console(force_terminal=True, width=40)
++    code = "print('hello')"
++    # Use a specific background color override
++    background_color = "red"
++    padding = 1
++    syntax = Syntax(code, lexer="python", background_color=background_color, padding=padding)
++    
++    # We want to see if the padding segments have the red background
++    # The padding should be around the syntax.
++    # The syntax itself will have the red background.
++    # The padding should also have the red background.
++    
++    # Let's capture the output
++    with console.capture() as capture:
++        console.print(syntax)
++    
++    output = capture.get()
++    # The output should contain the red background color code.
++    # Red background in ANSI is \x1b[41m or \x1b[48;2;255;0;0m etc.
++    # Since we are using rich, it might be \x1b[48;2;...m
++    
++    # Let's just print the segments and check them.
++    # We can't easily get segments from console.print.
++    # But we can use console.render.
++    
++    segments = list(console.render(syntax))
++    # The first segment should be the padding.
++    # Let's check the style of the first segment.
++    
++    first_segment = segments[0]
++    print(f"First segment style: {first_segment.style}")
++    print(f"First segment text: {repr(first_segment.text)}")
++    
++    # The background color should be red.
++    assert first_segment.style.bgcolor == "red"
++
++if __name__ == "__main__":
++    try:
++        test_syntax_padding_background()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++    except Exception as e:
++        print(f"An error occurred: {e}")
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..4ce8fd2e
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,42 @@
++from rich.console import Console
++from rich.syntax import Syntax
++from rich.theme import Theme
++from rich.style import Style
++
++def test_syntax_padding_background():
++    # Create a theme with a specific default background
++    theme = Theme({
++        "syntax.background": Style(bgcolor="blue")
++    })
++    console = Console(theme=theme, force_terminal=True, width=40)
++
++    # Create a Syntax object with a background override and padding
++    # The padding should use the override (red), not the theme default (blue)
++    syntax = Syntax(
++        "print('hello world')",
++        "python",
++        background_color="red",
++        padding=1
++    )
++
++    # Capture the output
++    with console.capture() as capture:
++        console.print(syntax)
++    
++    output = capture.get()
++    
++    # The output should contain red background for the padding
++    # In rich, background colors are represented by ANSI escape codes
++    # Red background: \x1b[41m
++    # Blue background: \x1b[44m
++    
++    if "\x1b[41m" in output and "\x1b[44m" not in output:
++        print("SUCCESS: Padding uses the override background color (red).")
++    elif "\x1b[44m" in output:
++        print("FAILURE: Padding uses the theme default background color (blue).")
++    else:
++        print("FAILURE: Unexpected output.")
++        print(f"Output: {repr(output)}")
++
++if __name__ == "__main__":
++    test_syntax_padding_background()
+diff --git a/rich/syntax.py b/rich/syntax.py
+index f3ceff75..2772674a 100644
+--- a/rich/syntax.py
++++ b/rich/syntax.py
+@@ -620,7 +620,7 @@ class Syntax(JupyterMixin):
+         segments = Segments(self._get_syntax(console, options))
+         if self.padding:
+             yield Padding(
+-                segments, style=self._theme.get_background_style(), pad=self.padding
++                segments, style=self._get_base_style(), pad=self.padding
+             )
+         else:
+             yield segments

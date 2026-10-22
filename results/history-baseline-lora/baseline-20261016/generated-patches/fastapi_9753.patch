@@ -1,0 +1,142 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 13486dd1..eeea00dc 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -1,7 +1,7 @@
+ import inspect
+ import sys
+ from dataclasses import dataclass, field
+-from functools import cached_property
++from functools import cached_property, partial
+ from typing import Any, Callable, List, Optional, Sequence, Union
+ 
+ from fastapi._compat import ModelField
+@@ -79,7 +79,17 @@ class Dependant:
+     def _unwrapped_call(self) -> Any:
+         if self.call is None:
+             return self.call  # pragma: no cover
+-        return inspect.unwrap(self.call)
++        unwrapped = inspect.unwrap(self.call)
++        while isinstance(unwrapped, partial):
++            unwrapped = unwrapped.func
++        return unwrapped
++
++    @cached_property
++    def call_name(self) -> str:
++        if self.call is None:
++            return "None"
++        unwrapped = self._unwrapped_call
++        return getattr(unwrapped, "__name__", str(self.call))
+ 
+     @cached_property
+     def is_gen_callable(self) -> bool:
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 1a493a9f..bdd00ad5 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -1,5 +1,6 @@
+ import dataclasses
+ import inspect
++from functools import partial
+ from contextlib import AsyncExitStack, contextmanager
+ from copy import copy, deepcopy
+ from dataclasses import dataclass
+@@ -193,6 +194,8 @@ def get_flat_params(dependant: Dependant) -> List[ModelField]:
+ def get_typed_signature(call: Callable[..., Any]) -> inspect.Signature:
+     signature = inspect.signature(call)
+     unwrapped = inspect.unwrap(call)
++    while isinstance(unwrapped, partial):
++        unwrapped = unwrapped.func
+     globalns = getattr(unwrapped, "__globals__", {})
+     typed_params = [
+         inspect.Parameter(
+@@ -219,6 +222,8 @@ def get_typed_annotation(annotation: Any, globalns: Dict[str, Any]) -> Any:
+ def get_typed_return_annotation(call: Callable[..., Any]) -> Any:
+     signature = inspect.signature(call)
+     unwrapped = inspect.unwrap(call)
++    while isinstance(unwrapped, partial):
++        unwrapped = unwrapped.func
+     annotation = signature.return_annotation
+ 
+     if annotation is inspect.Signature.empty:
+@@ -273,7 +278,7 @@ def get_dependant(
+             ):
+                 assert dependant.call
+                 raise DependencyScopeError(
+-                    f'The dependency "{dependant.call.__name__}" has a scope of '
++                    f'The dependency "{dependant.call_name}" has a scope of '
+                     '"request", it cannot depend on dependencies with scope "function".'
+                 )
+             sub_own_oauth_scopes: List[str] = []
+diff --git a/reproduce_partial.py b/reproduce_partial.py
+new file mode 100644
+index 00000000..b8cd42ec
+--- /dev/null
++++ b/reproduce_partial.py
+@@ -0,0 +1,30 @@
++
++import inspect
++from functools import partial
++from typing import Any, Dict, Callable
++from fastapi.dependencies.utils import get_typed_signature
++
++def get_typed_annotation(annotation: Any, globalns: Dict[str, Any]) -> Any:
++    return annotation
++
++def test_partial():
++    def my_dep(q: str):
++        return q
++
++    p = partial(my_dep, q="foo")
++    sig = get_typed_signature(p)
++    print(f"Signature: {sig}")
++    print(f"Parameters: {sig.parameters}")
++
++    class MyClass:
++        def __call__(self, q: str):
++            return q
++
++    c = MyClass()
++    p_c = partial(c, q="foo")
++    sig_c = get_typed_signature(p_c)
++    print(f"Class Signature: {sig_c}")
++    print(f"Class Parameters: {sig_c.parameters}")
++
++if __name__ == "__main__":
++    test_partial()
+diff --git a/reproduce_partial_forward_ref.py b/reproduce_partial_forward_ref.py
+new file mode 100644
+index 00000000..b4fa8f9c
+--- /dev/null
++++ b/reproduce_partial_forward_ref.py
+@@ -0,0 +1,30 @@
++
++import inspect
++from functools import partial
++from typing import Any, Dict, Callable, ForwardRef
++from fastapi.dependencies.utils import get_typed_signature, get_typed_annotation
++
++def evaluate_forwardref(forward_ref, globalns, localns):
++    return forward_ref._evaluate(globalns, localns, set())
++
++def test_partial_forward_ref():
++    class MyModel:
++        pass
++
++    def my_dep(q: "MyModel"):
++        return q
++
++    # This should work normally
++    sig = get_typed_signature(my_dep)
++    print(f"Normal Signature: {sig}")
++
++    # This might fail with partial
++    p = partial(my_dep, q="foo")
++    try:
++        sig_p = get_typed_signature(p)
++        print(f"Partial Signature: {sig_p}")
++    except Exception as e:
++        print(f"Partial Signature failed: {e}")
++
++if __name__ == "__main__":
++    test_partial_forward_ref()

@@ -1,0 +1,217 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..650dbbbb
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,40 @@
++
++import io
++from rich.console import Console
++from rich.file_proxy import FileProxy
++
++class MockFile:
++    def write(self, text):
++        pass
++    def flush(self):
++        pass
++
++def test_isatty_proxy():
++    # Case 1: File has isatty
++    class FileWithIsatty:
++        def isatty(self):
++            return True
++        def write(self, text):
++            pass
++        def flush(self):
++            pass
++
++    file_with_isatty = FileWithIsatty()
++    console = Console(file=file_with_isatty)
++    print(f"Direct is_terminal: {console.is_terminal}") # Should be True
++
++    proxy = FileProxy(console, file_with_isatty)
++    console.file = proxy
++    print(f"Proxied is_terminal (with isatty): {console.is_terminal}") # Should be True
++
++    # Case 2: File does NOT have isatty
++    file_without_isatty = MockFile()
++    console = Console(file=file_without_isatty)
++    print(f"Direct is_terminal: {console.is_terminal}") # Should be False
++
++    proxy = FileProxy(console, file_without_isatty)
++    console.file = proxy
++    print(f"Proxied is_terminal (without isatty): {console.is_terminal}") # Should be False
++
++if __name__ == '__main__':
++    test_isatty_proxy()
+diff --git a/repro_bug.py b/repro_bug.py
+new file mode 100644
+index 00000000..d96e30c5
+--- /dev/null
++++ b/repro_bug.py
+@@ -0,0 +1,23 @@
++
++import io
++from rich.file_proxy import FileProxy
++
++class FileWithIsatty:
++    def isatty(self):
++        return True
++    def write(self, text):
++        pass
++    def flush(self):
++        pass
++
++def test_isatty_bug():
++    file = FileWithIsatty()
++    from rich.console import Console
++    console = Console()
++    proxy = FileProxy(console, file)
++    
++    print(f"Underlying isatty: {file.isatty()}") # True
++    print(f"Proxy isatty: {proxy.isatty()}") # Should be True, but probably False
++
++if __name__ == '__main__':
++    test_isatty_bug()
+diff --git a/repro_progress.py b/repro_progress.py
+new file mode 100644
+index 00000000..47bde88b
+--- /dev/null
++++ b/repro_progress.py
+@@ -0,0 +1,42 @@
++
++import io
++from rich.progress import Progress
++from rich.file_proxy import FileProxy
++
++class MockFile:
++    def write(self, text):
++        pass
++    def flush(self):
++        pass
++
++def test_progress_isatty_proxy():
++    file = MockFile()
++    # We need a console to create a progress
++    from rich.console import Console
++    console = Console(file=file)
++    
++    # Create a FileProxy
++    proxy = FileProxy(console, file)
++    
++    # Create a Progress instance. 
++    # Progress takes a console, and it uses console.file as handle.
++    # But Progress.handle is actually the console.file.
++    
++    # Let's see how Progress is initialized.
++    # Progress(console=console)
++    # self.console = console
++    # self.handle = console.file
++    
++    progress = Progress(console=console)
++    console.file = proxy
++    progress.handle = proxy # Force the proxy as handle
++    
++    try:
++        print(f"Progress isatty: {progress.isatty()}")
++    except AttributeError as e:
++        print(f"Caught expected AttributeError: {e}")
++    except Exception as e:
++        print(f"Caught unexpected exception: {type(e).__name__}: {e}")
++
++if __name__ == '__main__':
++    test_progress_isatty_proxy()
+diff --git a/repro_progress_v2.py b/repro_progress_v2.py
+new file mode 100644
+index 00000000..cf1ef66f
+--- /dev/null
++++ b/repro_progress_v2.py
+@@ -0,0 +1,31 @@
++
++import io
++from rich.progress import Progress
++from rich.file_proxy import FileProxy
++
++class MockFile:
++    def write(self, text):
++        pass
++    def flush(self):
++        pass
++
++def test_progress_isatty_proxy():
++    file = MockFile()
++    from rich.console import Console
++    console = Console(file=file)
++    
++    proxy = FileProxy(console, file)
++    
++    # We need to use _Reader because that's where isatty is called in rich/progress.py
++    from rich.progress import _Reader
++    reader = _Reader(handle=proxy, progress=Progress(), task=1)
++    
++    try:
++        print(f"Reader isatty: {reader.isatty()}")
++    except AttributeError as e:
++        print(f"Caught AttributeError: {e}")
++    except Exception as e:
++        print(f"Caught unexpected exception: {type(e).__name__}: {e}")
++
++if __name__ == '__main__':
++    test_progress_isatty_proxy()
+diff --git a/repro_progress_v3.py b/repro_progress_v3.py
+new file mode 100644
+index 00000000..dd83f892
+--- /dev/null
++++ b/repro_progress_v3.py
+@@ -0,0 +1,35 @@
++
++import io
++from rich.progress import Progress, _Reader
++from rich.file_proxy import FileProxy
++
++class MockFile:
++    def write(self, text):
++        pass
++    def flush(self):
++        pass
++
++def test_progress_isatty_proxy():
++    file = MockFile()
++    from rich.console import Console
++    console = Console(file=file)
++    
++    proxy = FileProxy(console, file)
++    
++    print(f"Proxy type: {type(proxy)}")
++    try:
++        print(f"Proxy isatty attribute: {getattr(proxy, 'isatty', 'Not Found')}")
++    except Exception as e:
++        print(f"Error getting isatty: {e}")
++
++    reader = _Reader(handle=proxy, progress=Progress(), task=1)
++    
++    try:
++        print(f"Reader isatty: {reader.isatty()}")
++    except AttributeError as e:
++        print(f"Caught AttributeError: {e}")
++    except Exception as e:
++        print(f"Caught unexpected exception: {type(e).__name__}: {e}")
++
++if __name__ == '__main__':
++    test_progress_isatty_proxy()
+diff --git a/rich/file_proxy.py b/rich/file_proxy.py
+index 4b0b0da6..e4560185 100644
+--- a/rich/file_proxy.py
++++ b/rich/file_proxy.py
+@@ -17,7 +17,11 @@ class FileProxy(io.TextIOBase):
+         self.__buffer: List[str] = []
+         self.__ansi_decoder = AnsiDecoder()
+ 
++    def isatty(self) -> bool:
++        return getattr(self.__file, "isatty", lambda: False)()
++
+     @property
++
+     def rich_proxied_file(self) -> IO[str]:
+         """Get proxied file."""
+         return self.__file

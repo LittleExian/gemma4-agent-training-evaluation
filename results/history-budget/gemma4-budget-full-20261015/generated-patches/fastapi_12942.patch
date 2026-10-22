@@ -1,0 +1,136 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index e49380cb..3ada7866 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -369,13 +369,16 @@ def analyze_param(
+         type_annotation = annotation
+     # Extract Annotated info
+     if get_origin(use_annotation) is Annotated:
+-        annotated_args = get_args(annotation)
+-        type_annotation = annotated_args[0]
+-        fastapi_annotations = [
+-            arg
+-            for arg in annotated_args[1:]
+-            if isinstance(arg, (FieldInfo, params.Depends))
+-        ]
++        fastapi_annotations = []
++        while get_origin(use_annotation) is Annotated:
++            annotated_args = get_args(use_annotation)
++            fastapi_annotations.extend([
++                arg
++                for arg in annotated_args[1:]
++                if isinstance(arg, (FieldInfo, params.Depends))
++            ])
++            use_annotation = annotated_args[0]
++        type_annotation = use_annotation
+         fastapi_specific_annotations = [
+             arg
+             for arg in fastapi_annotations
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..63db0b22
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,41 @@
++from fastapi import FastAPI, Body
++from typing import Annotated, Union
++from pydantic import BaseModel
++from fastapi.params import Tag, Discriminator
++from fastapi.dependencies.utils import analyze_param
++import inspect
++
++class ApplePie(BaseModel):
++    name: str = "Apple Pie"
++
++class PumpkinPie(BaseModel):
++    name: str = "Pumpkin Pie"
++
++def get_discriminator_value(v):
++    return getattr(v, "type", "unknown")
++
++# The problematic type
++Dessert = Annotated[
++    Union[Annotated[ApplePie, Tag("apple")], Annotated[PumpkinPie, Tag("pumpkin")]],
++    Discriminator(get_discriminator_value)
++]
++
++app = FastAPI()
++
++@app.post("/dessert")
++async def post_dessert(dessert: Annotated[Dessert, Body()]):
++    return dessert
++
++if __name__ == "__main__":
++    # Check if the route was created and if the parameter is a body parameter
++    route = next(r for r in app.routes if r.path == "/dessert")
++    # In FastAPI, route.endpoint is the function.
++    # We can check the dependants.
++    for dependant in route.endpoint.__fastapi_dependant__.dependants:
++        if dependant.name == "dessert":
++            print(f"Param dessert: {dependant}")
++            # Check if it's in body_params
++            if dependant.field and dependant.field.field_info.in_ == "body":
++                print("Correctly identified as body parameter")
++            else:
++                print(f"Incorrectly identified as {dependant.field.field_info.in_ if dependant.field else 'unknown'} parameter")
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..03dec5e4
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,55 @@
++from typing import Any, Literal, Annotated
++from pydantic import BaseModel, Discriminator
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++
++class Tag:
++    def __init__(self, value: str):
++        self.value = value
++
++class Pie(BaseModel):
++    time_to_cook: int
++    num_ingredients: int
++
++class ApplePie(Pie):
++    fruit: Literal["apple"] = "apple"
++
++class PumpkinPie(Pie):
++    filling: Literal["pumpkin"] = "pumpkin"
++
++def get_discriminator_value(v: Any) -> str:
++    if isinstance(v, dict):
++        return v.get("fruit", v.get("filling"))
++    return getattr(v, "fruit", getattr(v, "filling", None))
++
++Dessert = Annotated[
++    Annotated[ApplePie, Tag("apple")] | Annotated[PumpkinPie, Tag("pumpkin")],
++    Discriminator(get_discriminator_value),
++]
++
++app = FastAPI()
++@app.post("/dessert")
++async def dinner(dessert: Dessert) -> dict[str, Any]:
++    return dessert.model_dump()
++
++client = TestClient(app)
++
++def test_dessert():
++    # Test Apple Pie
++    response = client.post("/dessert", json={"time_to_cook": 10, "num_ingredients": 5, "fruit": "apple"})
++    assert response.status_code == 200
++    assert response.json() == {"time_to_cook": 10, "num_ingredients": 5, "fruit": "apple"}
++
++    # Test Pumpkin Pie
++    response = client.post("/dessert", json={"time_to_cook": 20, "num_ingredients": 3, "filling": "pumpkin"})
++    assert response.status_code == 200
++    assert response.json() == {"time_to_cook": 20, "num_ingredients": 3, "filling": "pumpkin"}
++
++if __name__ == "__main__":
++    try:
++        test_dessert()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()

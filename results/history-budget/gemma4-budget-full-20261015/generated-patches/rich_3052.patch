@@ -1,0 +1,143 @@
+diff --git a/rich/prompt.py b/rich/prompt.py
+index 064c959b..10cb6629 100644
+--- a/rich/prompt.py
++++ b/rich/prompt.py
+@@ -49,6 +49,7 @@ class PromptBase(Generic[PromptType]):
+     prompt_suffix = ": "
+ 
+     choices: Optional[List[str]] = None
++    case_sensitive: bool = True
+ 
+     def __init__(
+         self,
+@@ -59,6 +60,7 @@ class PromptBase(Generic[PromptType]):
+         choices: Optional[List[str]] = None,
+         show_default: bool = True,
+         show_choices: bool = True,
++        case_sensitive: bool = True,
+     ) -> None:
+         self.console = console or get_console()
+         self.prompt = (
+@@ -71,6 +73,7 @@ class PromptBase(Generic[PromptType]):
+             self.choices = choices
+         self.show_default = show_default
+         self.show_choices = show_choices
++        self.case_sensitive = case_sensitive
+ 
+     @classmethod
+     @overload
+@@ -83,6 +86,7 @@ class PromptBase(Generic[PromptType]):
+         choices: Optional[List[str]] = None,
+         show_default: bool = True,
+         show_choices: bool = True,
++        case_sensitive: bool = True,
+         default: DefaultType,
+         stream: Optional[TextIO] = None,
+     ) -> Union[DefaultType, PromptType]:
+@@ -99,6 +103,7 @@ class PromptBase(Generic[PromptType]):
+         choices: Optional[List[str]] = None,
+         show_default: bool = True,
+         show_choices: bool = True,
++        case_sensitive: bool = True,
+         stream: Optional[TextIO] = None,
+     ) -> PromptType:
+         ...
+@@ -113,6 +118,7 @@ class PromptBase(Generic[PromptType]):
+         choices: Optional[List[str]] = None,
+         show_default: bool = True,
+         show_choices: bool = True,
++        case_sensitive: bool = True,
+         default: Any = ...,
+         stream: Optional[TextIO] = None,
+     ) -> Any:
+@@ -137,6 +143,7 @@ class PromptBase(Generic[PromptType]):
+             choices=choices,
+             show_default=show_default,
+             show_choices=show_choices,
++            case_sensitive=case_sensitive,
+         )
+         return _prompt(default=default, stream=stream)
+ 
+@@ -212,7 +219,9 @@ class PromptBase(Generic[PromptType]):
+             bool: True if choice was valid, otherwise False.
+         """
+         assert self.choices is not None
+-        return value.strip() in self.choices
++        if self.case_sensitive:
++            return value.strip() in self.choices
++        return value.strip().lower() in [c.lower() for c in self.choices]
+ 
+     def process_response(self, value: str) -> PromptType:
+         """Process response from user, convert to prompt type.
+diff --git a/verify_prompt.py b/verify_prompt.py
+new file mode 100644
+index 00000000..d525251d
+--- /dev/null
++++ b/verify_prompt.py
+@@ -0,0 +1,66 @@
++from rich.prompt import Prompt
++from unittest.mock import MagicMock
++from rich.console import Console
++
++def test_prompt_case_sensitive():
++    console = Console()
++    # Mock console.input to return "paul"
++    console.input = MagicMock(return_value="paul")
++    
++    # Case sensitive (default) - should fail and loop
++    # Since it loops, we need to mock it to return "Paul" eventually
++    console.input.side_effect = ["paul", "Paul"]
++    
++    # We can't easily test the loop without mocking more or using a stream
++    # Let's use a stream instead.
++    pass
++
++def test_prompt_case_insensitive():
++    from io import StringIO
++    
++    # Case insensitive: "paul" should be accepted for ["Paul", "Jessica", "Duncan"]
++    # We use a StringIO stream to simulate input
++    input_stream = StringIO("paul\n")
++    
++    # We need to mock the console to use the stream
++    console = Console()
++    
++    # Prompt.ask returns the result of _prompt(default=default, stream=stream)
++    # _prompt is an instance of Prompt (which is PromptBase[str])
++    # __call__ uses get_input which calls console.input(prompt, password, stream=stream)
++    
++    # Let's just test the Prompt instance directly
++    prompt = Prompt("Enter name", choices=["Paul", "Jessica", "Duncan"], case_sensitive=False)
++    result = prompt(default="Paul", stream=input_stream)
++    
++    print(f"Result: {result}")
++    assert result == "paul"
++
++def test_prompt_case_sensitive_fail():
++    from io import StringIO
++    
++    # Case sensitive: "paul" should NOT be accepted for ["Paul", "Jessica", "Duncan"]
++    # It should loop. To avoid infinite loop, we provide a valid one after.
++    input_stream = StringIO("paul\nPaul\n")
++    
++    console = Console()
++    prompt = Prompt("Enter name", choices=["Paul", "Jessica", "Duncan"], case_sensitive=True)
++    
++    # We need to capture the output to see the error message, but for now just check result
++    result = prompt(default="Paul", stream=input_stream)
++    
++    print(f"Result: {result}")
++    assert result == "Paul"
++
++if __name__ == "__main__":
++    try:
++        test_prompt_case_insensitive()
++        print("test_prompt_case_insensitive passed")
++        test_prompt_case_sensitive_fail()
++        print("test_prompt_case_sensitive_fail passed")
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

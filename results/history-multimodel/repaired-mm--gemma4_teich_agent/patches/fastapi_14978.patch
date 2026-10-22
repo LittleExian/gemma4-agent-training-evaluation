@@ -1,0 +1,69 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index ab18ec2d..cefb21a3 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -1010,6 +1010,14 @@ def get_body_field(
+         ]
+         if len(set(body_param_media_types)) == 1:
+             BodyFieldInfo_kwargs["media_type"] = body_param_media_types[0]
++
++        body_param_strict_content_types = [
++            f.field_info.strict_content_type
++            for f in flat_dependant.body_params
++            if isinstance(f.field_info, params.Body)
++        ]
++        if len(set(body_param_strict_content_types)) == 1:
++            BodyFieldInfo_kwargs["strict_content_type"] = body_param_strict_content_types[0]
+     final_field = create_model_field(
+         name="body",
+         type_=BodyModel,
+diff --git a/fastapi/params.py b/fastapi/params.py
+index 68f98708..fb4023c6 100644
+--- a/fastapi/params.py
++++ b/fastapi/params.py
+@@ -497,6 +497,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+         ] = None,
+         discriminator: str | None = None,
+         strict: bool | None = _Unset,
++        strict_content_type: bool | None = _Unset,
+         multiple_of: float | None = _Unset,
+         allow_inf_nan: bool | None = _Unset,
+         max_digits: int | None = _Unset,
+@@ -517,6 +518,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+     ):
+         self.embed = embed
+         self.media_type = media_type
++        self.strict_content_type = strict_content_type
+         if example is not _Unset:
+             warnings.warn(
+                 "`example` has been deprecated, please use `examples` instead",
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 528c9629..c8bb75b1 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -370,6 +370,8 @@ def get_request_handler(
+                         json_body: Any = Undefined
+                         content_type_value = request.headers.get("content-type")
+                         if not content_type_value:
++                            if body_field.field_info.strict_content_type:
++                                raise HTTPException(status_code=415, detail="Content-Type header is required for strict_content_type=True")
+                             json_body = await request.json()
+                         else:
+                             message = email.message.Message()
+@@ -380,6 +382,8 @@ def get_request_handler(
+                                     json_body = await request.json()
+                         if json_body != Undefined:
+                             body = json_body
++                        elif body_field.field_info.strict_content_type:
++                            raise HTTPException(status_code=415, detail="Content-Type must be application/json for strict_content_type=True")
+                         else:
+                             body = body_bytes
+         except json.JSONDecodeError as e:
+@@ -401,6 +405,7 @@ def get_request_handler(
+             # If a middleware raises an HTTPException, it should be raised again
+             raise
+         except Exception as e:
++            print(f"Caught exception: {type(e)} {e}")
+             http_error = HTTPException(
+                 status_code=400, detail="There was an error parsing the body"
+             )

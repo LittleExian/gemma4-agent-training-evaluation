@@ -1,0 +1,108 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index d6359c0f..76e0e278 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -49,6 +49,7 @@ class Dependant:
+             self.call,
+             tuple(sorted(set(self.security_scopes or []))),
+             self.computed_scope or "",
++            self.security_scopes_param_name,
+         )
+ 
+     @cached_property
+diff --git a/repro_cache.py b/repro_cache.py
+new file mode 100644
+index 00000000..48f5c19c
+--- /dev/null
++++ b/repro_cache.py
+@@ -0,0 +1,90 @@
++
++import asyncio
++from fastapi import FastAPI, Depends, Security
++from fastapi.security.oauth2 import SecurityScopes
++from fastapi.dependencies.utils import solve_dependencies
++from fastapi.dependencies.models import Dependant
++from fastapi.routing import APIRoute
++from fastapi.requests import Request
++from contextlib import AsyncExitStack
++
++app = FastAPI()
++
++# A dependency that accesses SecurityScopes
++async def scope_dep(scopes: SecurityScopes):
++    return scopes.scopes
++
++# A dependency that depends on scope_dep
++async def parent_dep(a = Depends(scope_dep)):
++    return a
++
++async def test_caching():
++    # Mock request
++    request = Request(scope={"type": "http"})
++    
++    # Create dependants
++    # scope_dep is used via Depends(scope_dep)
++    # We want to see if it's cached correctly when called with different scopes
++    
++    # Case 1: scope_dep called with scopes=['admin']
++    # We simulate this by creating a Dependant with security_scopes=['admin']
++    dep_admin = Dependant(
++        call=scope_dep,
++        security_scopes=['admin'],
++        security_scopes_param_name='scopes'
++    )
++    
++    # Case 2: scope_dep called with scopes=['user']
++    dep_user = Dependant(
++        call=scope_dep,
++        security_scopes=['user'],
++        security_scopes_param_name='scopes'
++    )
++    
++    # Case 3: scope_dep called with no scopes
++    dep_none = Dependant(
++        call=scope_dep,
++        security_scopes=[],
++        security_scopes_param_name='scopes'
++    )
++
++    cache = {}
++    
++    async with AsyncExitStack() as async_exit_stack:
++        request.scope["fastapi_inner_astack"] = async_exit_stack
++        # Solve admin
++        res_admin = await solve_dependencies(
++            request=request, 
++            dependant=dep_admin, 
++            dependency_cache=cache, 
++            async_exit_stack=async_exit_stack, 
++            embed_body_fields=False
++        )
++        print(f"Admin result: {res_admin.values['scopes'].scopes}")
++        
++        # Solve user
++        res_user = await solve_dependencies(
++            request=request, 
++            dependant=dep_user, 
++            dependency_cache=cache, 
++            async_exit_stack=async_exit_stack, 
++            embed_body_fields=False
++        )
++        print(f"User result: {res_user.values['scopes'].scopes}")
++        
++        # Solve none
++        res_none = await solve_dependencies(
++            request=request, 
++            dependant=dep_none, 
++            dependency_cache=cache, 
++            async_exit_stack=async_exit_stack, 
++            embed_body_fields=False
++        )
++        print(f"None result: {res_none.values['scopes'].scopes}")
++        
++        # Verify that they are all in the cache with different keys
++        print(f"Cache size: {len(cache)}")
++        assert len(cache) == 3
++
++if __name__ == "__main__":
++    asyncio.run(test_caching())

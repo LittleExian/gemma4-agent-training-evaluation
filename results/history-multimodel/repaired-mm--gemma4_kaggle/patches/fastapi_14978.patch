@@ -1,0 +1,83 @@
+diff --git a/fastapi/params.py b/fastapi/params.py
+index 68f98708..10319db1 100644
+--- a/fastapi/params.py
++++ b/fastapi/params.py
+@@ -476,6 +476,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+         annotation: Any | None = None,
+         embed: bool | None = None,
+         media_type: str = "application/json",
++        strict_content_type: bool = False,
+         alias: str | None = None,
+         alias_priority: int | None = _Unset,
+         validation_alias: str | AliasPath | AliasChoices | None = None,
+@@ -517,6 +518,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+     ):
+         self.embed = embed
+         self.media_type = media_type
++        self.strict_content_type = strict_content_type
+         if example is not _Unset:
+             warnings.warn(
+                 "`example` has been deprecated, please use `examples` instead",
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 528c9629..165ddc31 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -333,6 +333,11 @@ def get_request_handler(
+     assert dependant.call is not None, "dependant.call must be a function"
+     is_coroutine = dependant.is_coroutine_callable
+     is_body_form = body_field and isinstance(body_field.field_info, params.Form)
++    strict_content_type = (
++        body_field and
++        isinstance(body_field.field_info, params.Body) and
++        getattr(body_field.field_info, "strict_content_type", False)
++    )
+     if isinstance(response_class, DefaultPlaceholder):
+         actual_response_class: type[Response] = response_class.value
+     else:
+@@ -370,6 +375,18 @@ def get_request_handler(
+                         json_body: Any = Undefined
+                         content_type_value = request.headers.get("content-type")
+                         if not content_type_value:
++                            if strict_content_type:
++                                raise RequestValidationError(
++                                    [
++                                        {
++                                            "type": "missing",
++                                            "loc": ("header", "content-type"),
++                                            "msg": "Field required",
++                                            "input": None,
++                                        }
++                                    ],
++                                    endpoint_ctx=endpoint_ctx,
++                                )
+                             json_body = await request.json()
+                         else:
+                             message = email.message.Message()
+@@ -378,6 +395,18 @@ def get_request_handler(
+                                 subtype = message.get_content_subtype()
+                                 if subtype == "json" or subtype.endswith("+json"):
+                                     json_body = await request.json()
++                            if json_body == Undefined and strict_content_type:
++                                raise RequestValidationError(
++                                    [
++                                        {
++                                            "type": "value_error",
++                                            "loc": ("header", "content-type"),
++                                            "msg": "Invalid content type, expected application/json",
++                                            "input": content_type_value,
++                                        }
++                                    ],
++                                    endpoint_ctx=endpoint_ctx,
++                                )
+                         if json_body != Undefined:
+                             body = json_body
+                         else:
+@@ -397,6 +426,8 @@ def get_request_handler(
+                 endpoint_ctx=endpoint_ctx,
+             )
+             raise validation_error from e
++        except RequestValidationError:
++            raise
+         except HTTPException:
+             # If a middleware raises an HTTPException, it should be raised again
+             raise

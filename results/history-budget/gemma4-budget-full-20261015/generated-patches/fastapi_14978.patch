@@ -1,0 +1,110 @@
+diff --git a/fastapi/params.py b/fastapi/params.py
+index 68f98708..e5d0d629 100644
+--- a/fastapi/params.py
++++ b/fastapi/params.py
+@@ -476,6 +476,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+         annotation: Any | None = None,
+         embed: bool | None = None,
+         media_type: str = "application/json",
++        strict_content_type: bool = False,
+         alias: str | None = None,
+         alias_priority: int | None = _Unset,
+         validation_alias: str | AliasPath | AliasChoices | None = None,
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 528c9629..fa3f9eeb 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -345,6 +345,10 @@ def get_request_handler(
+             "fastapi_middleware_astack not found in request scope"
+         )
+ 
++        strict_content_type = False
++        if body_field and isinstance(body_field.field_info, params.Body):
++            strict_content_type = body_field.field_info.strict_content_type
++
+         # Extract endpoint context for error messages
+         endpoint_ctx = (
+             _extract_endpoint_context(dependant.call)
+@@ -370,6 +374,8 @@ def get_request_handler(
+                         json_body: Any = Undefined
+                         content_type_value = request.headers.get("content-type")
+                         if not content_type_value:
++                            if strict_content_type:
++                                raise HTTPException(status_code=415, detail="Unsupported Media Type")
+                             json_body = await request.json()
+                         else:
+                             message = email.message.Message()
+@@ -378,6 +384,10 @@ def get_request_handler(
+                                 subtype = message.get_content_subtype()
+                                 if subtype == "json" or subtype.endswith("+json"):
+                                     json_body = await request.json()
++                                elif strict_content_type:
++                                    raise HTTPException(status_code=415, detail="Unsupported Media Type")
++                            elif strict_content_type:
++                                raise HTTPException(status_code=415, detail="Unsupported Media Type")
+                         if json_body != Undefined:
+                             body = json_body
+                         else:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..855de5a9
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,57 @@
++
++from fastapi import FastAPI, Body, HTTPException
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.post("/strict")
++async def strict_endpoint(item: dict = Body(..., strict_content_type=True)):
++    return item
++
++@app.post("/non-strict")
++async def non_strict_endpoint(item: dict = Body(..., strict_content_type=False)):
++    return item
++
++client = TestClient(app)
++
++def test_strict_content_type():
++    # Valid JSON and content-type
++    response = client.post("/strict", json={"foo": "bar"})
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++    # Valid JSON but missing content-type
++    # TestClient.post(json=...) sets content-type. 
++    # To test missing content-type, we use content=...
++    import json
++    response = client.post("/strict", content=json.dumps({"foo": "bar"}), headers={})
++    assert response.status_code == 415
++    assert response.json()["detail"] == "Unsupported Media Type"
++
++    # Invalid content-type
++    response = client.post("/strict", json={"foo": "bar"}, headers={"Content-Type": "text/plain"})
++    assert response.status_code == 415
++    assert response.json()["detail"] == "Unsupported Media Type"
++
++def test_non_strict_content_type():
++    # Valid JSON and content-type
++    response = client.post("/non-strict", json={"foo": "bar"})
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++    # Valid JSON but missing content-type
++    import json
++    response = client.post("/non-strict", content=json.dumps({"foo": "bar"}), headers={})
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++    # Invalid content-type
++    response = client.post("/non-strict", json={"foo": "bar"}, headers={"Content-Type": "text/plain"})
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++if __name__ == "__main__":
++    test_strict_content_type()
++    test_non_strict_content_type()
++    print("All tests passed!")

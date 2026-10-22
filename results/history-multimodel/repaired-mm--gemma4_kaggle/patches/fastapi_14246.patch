@@ -1,0 +1,96 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index fb2c691d..96ba0d98 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -16,7 +16,7 @@ from typing import (
+ )
+ 
+ from fastapi._compat import may_v1, shared
+-from fastapi.openapi.constants import REF_TEMPLATE
++from fastapi.openapi.constants import REF_PREFIX, REF_TEMPLATE
+ from fastapi.types import IncEx, ModelNameMap
+ from pydantic import BaseModel, TypeAdapter, create_model
+ from pydantic import PydanticSchemaGenerationError as PydanticSchemaGenerationError
+@@ -203,7 +203,11 @@ def get_definitions(
+     Dict[Tuple[ModelField, Literal["validation", "serialization"]], JsonSchemaValue],
+     Dict[str, Dict[str, Any]],
+ ]:
+-    schema_generator = GenerateJsonSchema(ref_template=REF_TEMPLATE)
++    if separate_input_output_schemas:
++        ref_template = f"{REF_TEMPLATE}-{{mode}}"
++    else:
++        ref_template = REF_TEMPLATE
++    schema_generator = GenerateJsonSchema(ref_template=ref_template)
+     override_mode: Union[Literal["validation"], None] = (
+         None if separate_input_output_schemas else "validation"
+     )
+@@ -217,10 +221,15 @@ def get_definitions(
+         f for f in flat_model_fields if f.type_ not in input_types
+     }
+ 
+-    inputs = [
+-        (field, override_mode or field.mode, field._type_adapter.core_schema)
+-        for field in list(fields) + list(unique_flat_model_fields)
+-    ]
++    inputs = []
++    for field in fields:
++        inputs.append((field, override_mode or field.mode, field._type_adapter.core_schema))
++    for field in unique_flat_model_fields:
++        if separate_input_output_schemas:
++            inputs.append((field, "validation", field._type_adapter.core_schema))
++            inputs.append((field, "serialization", field._type_adapter.core_schema))
++        else:
++            inputs.append((field, override_mode or field.mode, field._type_adapter.core_schema))
+     field_mapping, definitions = schema_generator.generate_definitions(inputs=inputs)
+     for item_def in cast(Dict[str, Dict[str, Any]], definitions).values():
+         if "description" in item_def:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..3cae06e6
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,44 @@
++from fastapi import FastAPI
++from pydantic import BaseModel
++from fastapi.openapi.utils import get_openapi
++import json
++
++app = FastAPI()
++
++class Address(BaseModel):
++    street: str
++    city: str
++
++class UserCreate(BaseModel):
++    username: str
++    address: Address
++
++@app.post("/users")
++def create_user(user: UserCreate):
++    return user
++
++openapi_schema = get_openapi(
++    title=app.title,
++    version=app.version,
++    openapi_version=app.openapi_version,
++    summary=app.summary,
++    description=app.description,
++    terms_of_service=app.terms_of_service,
++    contact=app.contact,
++    license_info=app.license_info,
++    routes=app.routes,
++    webhooks=app.webhooks.routes,
++    separate_input_output_schemas=True,
++)
++schemas = openapi_schema.get("components", {}).get("schemas", {})
++
++print(f"Schemas: {list(schemas.keys())}")
++
++address_validation = any("Address" in k and "validation" in k for k in schemas.keys())
++address_serialization = any("Address" in k and "serialization" in k for k in schemas.keys())
++
++if address_validation and address_serialization:
++    print("SUCCESS: Both validation and serialization schemas for Address found.")
++else:
++    print(f"FAILURE: Address schemas not separated. Found: {list(schemas.keys())}")
++    exit(1)

@@ -1,0 +1,200 @@
+diff --git a/rich/traceback.py b/rich/traceback.py
+index fcefeb23..1b9570e4 100644
+--- a/rich/traceback.py
++++ b/rich/traceback.py
+@@ -3,6 +3,7 @@ import os
+ import sys
+ from dataclasses import dataclass, field
+ from traceback import walk_tb
++import traceback as tb_module
+ from types import ModuleType, TracebackType
+ from typing import (
+     Any,
+@@ -179,6 +180,8 @@ class Frame:
+     name: str
+     line: str = ""
+     locals: Optional[Dict[str, pretty.Node]] = None
++    offset: Optional[int] = None
++    column: Optional[int] = None
+ 
+ 
+ @dataclass
+@@ -440,6 +443,18 @@ class Traceback:
+                         continue
+                     yield key, value
+ 
++            # Get fine-grained locations for the last frame
++            offset = None
++            column = None
++            if traceback:
++                try:
++                    last_frame = tb_module.extract_tb(traceback)[-1]
++                    offset = getattr(last_frame, "offset", None)
++                    column = getattr(last_frame, "column", None)
++                except (IndexError, Exception):
++                    pass
++
++            last_frame_in_tb = None
+             for frame_summary, line_no in walk_tb(traceback):
+                 filename = frame_summary.f_code.co_filename
+                 if filename and not filename.startswith("<"):
+@@ -464,8 +479,14 @@ class Traceback:
+                     else None,
+                 )
+                 append(frame)
++                last_frame_in_tb = frame
+                 if frame_summary.f_locals.get("_rich_traceback_guard", False):
+                     del stack.frames[:]
++                    last_frame_in_tb = None
++
++            if last_frame_in_tb:
++                last_frame_in_tb.offset = offset
++                last_frame_in_tb.column = column
+ 
+             cause = getattr(exc_value, "__cause__", None)
+             if cause:
+@@ -690,38 +711,118 @@ class Traceback:
+                         # if the traceback filename is generated dynamically
+                         continue
+                     lexer_name = self._guess_lexer(frame.filename, code)
+-                    syntax = Syntax(
+-                        code,
+-                        lexer_name,
+-                        theme=theme,
+-                        line_numbers=True,
+-                        line_range=(
+-                            frame.lineno - self.extra_lines,
+-                            frame.lineno + self.extra_lines,
+-                        ),
+-                        highlight_lines={frame.lineno},
+-                        word_wrap=self.word_wrap,
+-                        code_width=self.code_width,
+-                        indent_guides=self.indent_guides,
+-                        dedent=False,
+-                    )
+-                    yield ""
++                    if frame.offset is not None:
++                        # Render lines before the error line
++                        if self.extra_lines > 0:
++                            yield Syntax(
++                                code,
++                                lexer_name,
++                                theme=theme,
++                                line_numbers=True,
++                                line_range=(
++                                    frame.lineno - self.extra_lines,
++                                    frame.lineno - 1,
++                                ),
++                                word_wrap=self.word_wrap,
++                                code_width=self.code_width,
++                                indent_guides=self.indent_guides,
++                                dedent=False,
++                            )
++
++                        # Render the error line
++                        yield Syntax(
++                            code,
++                            lexer_name,
++                            theme=theme,
++                            line_numbers=True,
++                            line_range=(
++                                frame.lineno,
++                                frame.lineno,
++                            ),
++                            highlight_lines={frame.lineno},
++                            word_wrap=self.word_wrap,
++                            code_width=self.code_width,
++                            indent_guides=self.indent_guides,
++                            dedent=False,
++                        )
++
++                        # Render the caret line
++                        # Calculate padding for line numbers
++                        max_line_no = frame.lineno + self.extra_lines
++                        padding = len(str(max_line_no)) + 1
++                        yield Text(
++                            " " * padding + " " * frame.offset + "▲",
++                            style="traceback.error",
++                        )
++
++                        # Render lines after the error line
++                        if self.extra_lines > 0:
++                            yield Syntax(
++                                code,
++                                lexer_name,
++                                theme=theme,
++                                line_numbers=True,
++                                line_range=(
++                                    frame.lineno + 1,
++                                    frame.lineno + self.extra_lines,
++                                ),
++                                word_wrap=self.word_wrap,
++                                code_width=self.code_width,
++                                indent_guides=self.indent_guides,
++                                dedent=False,
++                            )
++
++                        if frame.locals:
++                            yield from render_locals(frame)
++                    else:
++                        syntax = Syntax(
++                            code,
++                            lexer_name,
++                            theme=theme,
++                            line_numbers=True,
++                            line_range=(
++                                frame.lineno - self.extra_lines,
++                                frame.lineno + self.extra_lines,
++                            ),
++                            highlight_lines={frame.lineno},
++                            word_wrap=self.word_wrap,
++                            code_width=self.code_width,
++                            indent_guides=self.indent_guides,
++                            dedent=False,
++                        )
++                        yield ""
++                        yield (
++                            Columns(
++                                [
++                                    syntax,
++                                    *render_locals(frame),
++                                ],
++                                padding=1,
++                            )
++                            if frame.locals
++                            else syntax
++                        )
+                 except Exception as error:
+                     yield Text.assemble(
+                         (f"\n{error}", "traceback.error"),
+                     )
+                 else:
+-                    yield (
+-                        Columns(
+-                            [
+-                                syntax,
+-                                *render_locals(frame),
+-                            ],
+-                            padding=1,
++                    if frame.offset is not None:
++                        yield (
++                            Columns(
++                                [
++                                    # We can't easily put multiple renderables in a column
++                                    # so we just yield them as they are
++                                    *render_locals(frame),
++                                ],
++                                padding=1,
++                            )
++                            if frame.locals
++                            else None
+                         )
+-                        if frame.locals
+-                        else syntax
+-                    )
++                    else:
++                        # This part is already handled in the `if frame.offset is not None` block
++                        pass
+ 
+ 
+ if __name__ == "__main__":  # pragma: no cover

@@ -1,0 +1,79 @@
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 21a1385a2..50df5a8a8 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -1002,6 +1002,44 @@ class APIRoute(routing.Route):
+         return match, child_scope
+ 
+ 
++class RouterInclude(BaseRoute):
++    def __init__(
++        self,
++        router: "APIRouter",
++        prefix: str,
++        tags: list[str | Enum] | None = None,
++        dependencies: Sequence[params.Depends] | None = None,
++        default_response_class: type[Response] | None = None,
++        responses: dict[int | str, dict[str, Any]] | None = None,
++        callbacks: list[BaseRoute] | None = None,
++        deprecated: bool | None = None,
++        include_in_schema: bool = True,
++        generate_unique_id_function: Callable[[APIRoute], str] | None = None,
++    ) -> None:
++        self.router = router
++        self.prefix = prefix
++        self.tags = tags or []
++        self.dependencies = list(dependencies or [])
++        self.default_response_class = default_response_class
++        self.responses = responses or {}
++        self.callbacks = callbacks or []
++        self.deprecated = deprecated
++        self.include_in_schema = include_in_schema
++        self.generate_unique_id_function = generate_unique_id_function
++
++    def matches(self, scope: Scope) -> tuple[Match, Scope]:
++        if self.prefix:
++            path = scope.get("path", "")
++            if not path.startswith(self.prefix):
++                return Match.NONE, scope
++            scope = dict(scope)
++            scope["path"] = path[len(self.prefix):]
++        return self.router.matches(scope)
++
++    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
++        await self.router.handle(scope, receive, send)
++
++
+ class APIRouter(routing.Router):
+     """
+     `APIRouter` class, used to group *path operations*, for example to structure
+@@ -1314,6 +1352,29 @@ class APIRouter(routing.Router):
+         self.generate_unique_id_function = generate_unique_id_function
+         self.strict_content_type = strict_content_type
+ 
++    def matches(self, scope: Scope) -> tuple[Match, Scope]:
++        if self.prefix:
++            path = scope.get("path", "")
++            if not path.startswith(self.prefix):
++                return Match.NONE, scope
++            scope = dict(scope)
++            scope["path"] = path[len(self.prefix):]
++
++        for route in self.routes:
++            match, scope = route.matches(scope)
++            if match != Match.NONE:
++                return match, scope
++        return Match.NONE, scope
++
++    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
++        for route in self.routes:
++            match, scope = route.matches(scope)
++            if match != Match.NONE:
++                await route.handle(scope, receive, send)
++                return
++        if self.default:
++            await self.default(scope, receive, send)
++
+     def route(
+         self,
+         path: str,

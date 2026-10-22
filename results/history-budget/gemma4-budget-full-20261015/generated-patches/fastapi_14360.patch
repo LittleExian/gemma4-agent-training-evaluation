@@ -1,0 +1,105 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 20cb2c88..852c3b62 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -786,10 +786,10 @@ def request_params_to_args(
+                     else field.name.replace("_", "-")
+                 )
+         value = _get_multidict_value(field, received_params, alias=alias)
++        effective_alias = alias or field.alias or field.name
+         if value is not None:
+-            params_to_process[field.name] = value
+-        processed_keys.add(alias or field.alias)
+-        processed_keys.add(field.name)
++            params_to_process[effective_alias] = value
++        processed_keys.add(effective_alias)
+ 
+     for key in received_params.keys():
+         if key not in processed_keys:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..cc5ca961
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,49 @@
++
++from fastapi import FastAPI, Query, Depends
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field
++
++app = FastAPI()
++
++class FilterParams(BaseModel):
++    model_config = {"populate_by_name": False, "extra": "forbid"}
++    q: str = Field(Query(alias="query_string"))
++
++@app.get("/test")
++async def test_endpoint(params: FilterParams = Depends()):
++    return params
++
++client = TestClient(app)
++
++def test_alias_extraction():
++    # Test 1: Value extracted by alias should be put into model correctly
++    response = client.get("/test", params={"query_string": "hello"})
++    assert response.status_code == 200
++    assert response.json() == {"q": "hello"}
++
++def test_name_extraction_error():
++    # Test 2: Value passed by name should result in validation error and be in 'input'
++    response = client.get("/test", params={"q": "hello"})
++    assert response.status_code == 422
++    errors = response.json()["detail"]
++    assert len(errors) > 0
++    # The input should contain the extra parameter passed by name
++    # In FastAPI 422 responses, the 'input' field of the error detail should contain the value
++    # However, the structure of 422 response depends on Pydantic version.
++    # Let's check the error message or the input.
++    print(f"Error detail: {errors}")
++    # We expect 'q' to be in the input of the error if it was passed by name
++    # but not processed as the alias.
++
++if __name__ == "__main__":
++    try:
++        test_alias_extraction()
++        print("test_alias_extraction passed")
++    except Exception as e:
++        print(f"test_alias_extraction failed: {e}")
++
++    try:
++        test_name_extraction_error()
++        print("test_name_extraction_error passed")
++    except Exception as e:
++        print(f"test_name_extraction_error failed: {e}")
+diff --git a/test_pydantic.py b/test_pydantic.py
+new file mode 100644
+index 00000000..4520617a
+--- /dev/null
++++ b/test_pydantic.py
+@@ -0,0 +1,10 @@
++from pydantic import BaseModel, Field, ValidationError
++
++class FilterParams(BaseModel):
++    model_config = {"populate_by_name": False, "extra": "forbid"}
++    q: str = Field(alias="query_string")
++
++try:
++    FilterParams(q="hello")
++except ValidationError as e:
++    print(e.json())
+diff --git a/test_pydantic_empty.py` b/test_pydantic_empty.py`
+new file mode 100644
+index 00000000..79c90ad2
+--- /dev/null
++++ b/test_pydantic_empty.py`
+@@ -0,0 +1,10 @@
++from pydantic import BaseModel, Field, ValidationError
++
++class FilterParams(BaseModel):
++    model_config = {"populate_by_name": False, "extra": "forbid"}
++    q: str = Field(alias="query_string")
++
++try:
++    FilterParams()
++except ValidationError as e:
++    print(e.json())

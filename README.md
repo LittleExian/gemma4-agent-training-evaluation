@@ -2,6 +2,10 @@
 
 本仓库保存 Gemma 4 31B W4A16 + LoRA 的运行代码、环境配置、预检证据和结果快照。来源为 [TheWayLost/gemmacodeagent](https://github.com/TheWayLost/gemmacodeagent) 及本地适配，固定提交与原始文件哈希见 [来源说明](provenance/UPSTREAM.md)。
 
+## 历史全量评测
+
+已整理 **13 个完整的 129 题配置**：早期 budget 两轮、校准基线、七模型对比、Teich top-k64 重跑、LoRA246，以及 morning25。详见 [历史汇总表](results/HISTORICAL_129.md)、[参数 CSV](results/historical-129-index.csv) 和各组逐题结果。不同预算和环境的成绩分开注明，不视为受控排行榜。
+
 ## 当前实验
 
 | 实验 | 状态 / 结果 | 对应文件 |

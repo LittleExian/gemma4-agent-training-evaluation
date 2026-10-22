@@ -1,0 +1,372 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 2a4d9a01..31bead19 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -5,6 +5,7 @@ from functools import cached_property, partial
+ from typing import Any, Callable, List, Optional, Sequence, Union
+ 
+ from fastapi._compat import ModelField
++from fastapi.utils import is_async_callable, is_gen_callable, is_async_gen_callable
+ from fastapi.security.base import SecurityBase
+ from fastapi.types import DependencyCacheKey
+ from typing_extensions import Literal
+@@ -86,26 +87,15 @@ class Dependant:
+ 
+     @cached_property
+     def is_gen_callable(self) -> bool:
+-        if inspect.isgeneratorfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isgeneratorfunction(dunder_call)
++        return is_gen_callable(self.call)
+ 
+     @cached_property
+     def is_async_gen_callable(self) -> bool:
+-        if inspect.isasyncgenfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isasyncgenfunction(dunder_call)
++        return is_async_gen_callable(self.call)
+ 
+     @cached_property
+     def is_coroutine_callable(self) -> bool:
+-        if inspect.isroutine(self._unwrapped_call):
+-            return iscoroutinefunction(self._unwrapped_call)
+-        if inspect.isclass(self._unwrapped_call):
+-            return False
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return iscoroutinefunction(dunder_call)
++        return is_async_callable(self.call)
+ 
+     @cached_property
+     def computed_scope(self) -> Union[str, None]:
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index c10175b1..6fe3ebdb 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -57,12 +57,12 @@ from fastapi.utils import (
+     create_model_field,
+     generate_unique_id,
+     get_value_or_default,
++    is_async_callable,
+     is_body_allowed_for_status_code,
+ )
+ from pydantic import BaseModel
+ from starlette import routing
+ from starlette._exception_handler import wrap_app_handling_exceptions
+-from starlette._utils import is_async_callable
+ from starlette.concurrency import run_in_threadpool
+ from starlette.exceptions import HTTPException
+ from starlette.requests import Request
+diff --git a/fastapi/utils.py b/fastapi/utils.py
+index b3b89ed2..b797fc1e 100644
+--- a/fastapi/utils.py
++++ b/fastapi/utils.py
+@@ -1,3 +1,12 @@
++import inspect
++import sys
++from functools import partial
++
++if sys.version_info >= (3, 13):  # pragma: no cover
++    from inspect import iscoroutinefunction
++else:  # pragma: no cover
++    from asyncio import iscoroutinefunction
++
+ import re
+ import warnings
+ from dataclasses import is_dataclass
+@@ -258,3 +267,45 @@ def get_value_or_default(
+         if not isinstance(item, DefaultPlaceholder):
+             return item
+     return first_item
++
++def is_async_callable(obj: Any) -> bool:
++    while True:
++        if isinstance(obj, partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    if iscoroutinefunction(obj):
++        return True
++    if hasattr(obj, "__call__") and iscoroutinefunction(obj.__call__):
++        return True
++    return False
++
++def is_gen_callable(obj: Any) -> bool:
++    while True:
++        if isinstance(obj, partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    if inspect.isgeneratorfunction(obj):
++        return True
++    if hasattr(obj, "__call__") and inspect.isgeneratorfunction(obj.__call__):
++        return True
++    return False
++
++def is_async_gen_callable(obj: Any) -> bool:
++    while True:
++        if isinstance(obj, partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    if inspect.isasyncgenfunction(obj):
++        return True
++    if hasattr(obj, "__call__") and inspect.isasyncgenfunction(obj.__call__):
++        return True
++    return False
+diff --git a/fix_models.py b/fix_models.py
+new file mode 100644
+index 00000000..89dbbbd2
+--- /dev/null
++++ b/fix_models.py
+@@ -0,0 +1,31 @@
++import sys
++
++with open('fastapi/dependencies/models.py', 'r') as f:
++    content = f.read()
++
++# Add import
++content = content.replace(
++    'from fastapi._compat import ModelField\nfrom fastapi.security.base import SecurityBase',
++    'from fastapi._compat import ModelField\nfrom fastapi.utils import is_async_callable, is_gen_callable, is_async_gen_callable\nfrom fastapi.security.base import SecurityBase'
++)
++
++# Replace is_gen_callable
++content = content.replace(
++    '@cached_property\n    def is_gen_callable(self) -> bool:\n        if inspect.isgeneratorfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004\n        return inspect.isgeneratorfunction(dunder_call)',
++    '@cached_property\n    def is_gen_callable(self) -> bool:\n        return is_gen_callable(self.call)'
++)
++
++# Replace is_async_gen_callable
++content = content.replace(
++    '@cached_property\n    def is_async_gen_callable(self) -> bool:\n        if inspect.isasyncgenfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004\n        return inspect.isasyncgenfunction(dunder_call)',
++    '@cached_property\n    def is_async_gen_callable(self) -> bool:\n        return is_async_gen_callable(self.call)'
++)
++
++# Replace is_coroutine_callable
++content = content.replace(
++    '@cached_property\n    def is_coroutine_callable(self) -> bool:\n        if inspect.isroutine(self._unwrapped_call):\n            return iscoroutinefunction(self._unwrapped_call)\n        if inspect.isclass(self._unwrapped_call):\n            return False\n        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004\n        return iscoroutinefunction(dunder_call)',
++    '@cached_property\n    def is_coroutine_callable(self) -> bool:\n        return is_async_callable(self.call)'
++)
++
++with open('fastapi/dependencies/models.py', 'w') as f:
++    f.write(content)
+diff --git a/fix_utils.py b/fix_utils.py
+new file mode 100644
+index 00000000..1daffe44
+--- /dev/null
++++ b/fix_utils.py
+@@ -0,0 +1,63 @@
++import sys
++
++with open('fastapi/utils.py', 'r') as f:
++    content = f.read()
++
++imports = """import inspect
++import sys
++from functools import partial
++
++if sys.version_info >= (3, 13):  # pragma: no cover
++    from inspect import iscoroutinefunction
++else:  # pragma: no cover
++    from asyncio import iscoroutinefunction
++
++"""
++
++functions = """
++def is_async_callable(obj: Any) -> bool:
++    while True:
++        if isinstance(obj, partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    if iscoroutinefunction(obj):
++        return True
++    if hasattr(obj, "__call__") and iscoroutinefunction(obj.__call__):
++        return True
++    return False
++
++def is_gen_callable(obj: Any) -> bool:
++    while True:
++        if isinstance(obj, partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    if inspect.isgeneratorfunction(obj):
++        return True
++    if hasattr(obj, "__call__") and inspect.isgeneratorfunction(obj.__call__):
++        return True
++    return False
++
++def is_async_gen_callable(obj: Any) -> bool:
++    while True:
++        if isinstance(obj, partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    if inspect.isasyncgenfunction(obj):
++        return True
++    if hasattr(obj, "__call__") and inspect.isasyncgenfunction(obj.__call__):
++        return True
++    return False
++"""
++
++new_content = imports + content + functions
++with open('fastapi/utils.py', 'w') as f:
++    f.write(new_content)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..5148345b
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,137 @@
++import asyncio
++import functools
++import inspect
++from fastapi.utils import is_async_callable, is_gen_callable, is_async_gen_callable
++
++async def async_func():
++    pass
++
++def sync_func():
++    pass
++
++def async_gen_func():
++    yield 1
++
++async def async_gen_func_async():
++    yield 1
++
++def sync_gen_func():
++    yield 1
++
++def wrap_func(f):
++    @functools.wraps(f)
++    def wrapper(*args, **kwargs):
++        return f(*args, **kwargs)
++    return wrapper
++
++async def wrap_async_func(f):
++    @functools.wraps(f)
++    async def wrapper(*args, **kwargs):
++        return await f(*args, **kwargs)
++    return wrapper
++
++def test_is_async_callable():
++    print("Testing is_async_callable...")
++    
++    # Basic
++    assert is_async_callable(async_func) is True
++    assert is_async_callable(sync_func) is False
++    
++    # Wrapped
++    wrapped_async = wrap_async_func(async_func) # This is actually async
++    # Wait, wrap_async_func is async, so it returns a coroutine.
++    # I need a function that returns the wrapper.
++    
++    def sync_wrapper(f):
++        @functools.wraps(f)
++        def wrapper(*args, **kwargs):
++            return f(*args, **kwargs)
++        return wrapper
++    
++    def async_wrapper(f):
++        @functools.wraps(f)
++        async def wrapper(*args, **kwargs):
++            return await f(*args, **kwargs)
++        return wrapper
++
++    wrapped_async = async_wrapper(async_func)
++    assert is_async_callable(wrapped_async) is True
++    
++    wrapped_sync = sync_wrapper(sync_func)
++    assert is_async_callable(wrapped_sync) is False
++    
++    # Partial
++    partial_async = functools.partial(async_func)
++    assert is_async_callable(partial_async) is True
++    
++    partial_sync = functools.partial(sync_func)
++    assert is_async_callable(partial_sync) is False
++    
++    # Partial + Wrapped
++    partial_wrapped_async = functools.partial(wrapped_async)
++    assert is_async_callable(partial_wrapped_async) is True
++    
++    # Wrapped + Partial
++    wrapped_partial_async = async_wrapper(partial_async)
++    assert is_async_callable(wrapped_partial_async) is True
++    
++    # Nested
++    nested_wrapped_async = async_wrapper(async_wrapper(async_func))
++    assert is_async_callable(nested_wrapped_async) is True
++    
++    print("is_async_callable passed!")
++
++def test_is_gen_callable():
++    print("Testing is_gen_callable...")
++    
++    def sync_gen():
++        yield 1
++    
++    assert is_gen_callable(sync_gen) is True
++    
++    def sync_wrapper(f):
++        @functools.wraps(f)
++        def wrapper(*args, **kwargs):
++            return f(*args, **kwargs)
++        return wrapper
++    
++    wrapped_gen = sync_wrapper(sync_gen)
++    assert is_gen_callable(wrapped_gen) is True
++    
++    partial_gen = functools.partial(sync_gen)
++    assert is_gen_callable(partial_gen) is True
++    
++    print("is_gen_callable passed!")
++
++def test_is_async_gen_callable():
++    print("Testing is_async_gen_callable...")
++    
++    async def async_gen():
++        yield 1
++    
++    assert is_async_gen_callable(async_gen) is True
++    
++    def async_gen_wrapper(f):
++        @functools.wraps(f)
++        async def wrapper(*args, **kwargs):
++            async for item in f(*args, **kwargs):
++                yield item
++        return wrapper
++    
++    wrapped_async_gen = async_gen_wrapper(async_gen)
++    assert is_async_gen_callable(wrapped_async_gen) is True
++    
++    partial_async_gen = functools.partial(async_gen)
++    assert is_async_gen_callable(partial_async_gen) is True
++    
++    print("is_async_gen_callable passed!")
++
++if __name__ == "__main__":
++    try:
++        test_is_async_callable()
++        test_is_gen_callable()
++        test_is_async_gen_callable()
++        print("All tests passed!")
++    except AssertionError as e:
++        print(f"Test failed!")
++        raise e

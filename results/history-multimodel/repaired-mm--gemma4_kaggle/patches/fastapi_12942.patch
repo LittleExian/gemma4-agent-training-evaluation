@@ -1,0 +1,166 @@
+diff --git a/check_annotated.py b/check_annotated.py
+new file mode 100644
+index 00000000..a6dba0e5
+--- /dev/null
++++ b/check_annotated.py
+@@ -0,0 +1,6 @@
++
++from typing import Annotated
++from pydantic import BaseModel
++class Pie(BaseModel):
++    pass
++print(hasattr(Annotated[Pie, 'meta1'], '__pydantic_core_schema__'))
+diff --git a/check_lenient.py b/check_lenient.py
+new file mode 100644
+index 00000000..5b64c435
+--- /dev/null
++++ b/check_lenient.py
+@@ -0,0 +1,7 @@
++
++from typing import Annotated
++from pydantic import BaseModel
++from pydantic._internal._utils import lenient_issubclass
++class Pie(BaseModel):
++    pass
++print(lenient_issubclass(Annotated[Pie, 'meta1'], (BaseModel,)))
+diff --git a/check_scalar.py b/check_scalar.py
+new file mode 100644
+index 00000000..d01bba9d
+--- /dev/null
++++ b/check_scalar.py
+@@ -0,0 +1,7 @@
++
++from typing import Annotated
++from pydantic import BaseModel
++from fastapi._compat import field_annotation_is_scalar
++class Pie(BaseModel):
++    pass
++print(field_annotation_is_scalar(Annotated[Pie, 'meta1']))
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index e49380cb..df33e60f 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -368,45 +368,49 @@ def analyze_param(
+         use_annotation = annotation
+         type_annotation = annotation
+     # Extract Annotated info
+-    if get_origin(use_annotation) is Annotated:
+-        annotated_args = get_args(annotation)
++    fastapi_annotations = []
++    current_annotation = use_annotation
++    while get_origin(current_annotation) is Annotated:
++        annotated_args = get_args(current_annotation)
+         type_annotation = annotated_args[0]
+-        fastapi_annotations = [
++        fastapi_annotations.extend([
+             arg
+             for arg in annotated_args[1:]
+             if isinstance(arg, (FieldInfo, params.Depends))
+-        ]
+-        fastapi_specific_annotations = [
+-            arg
+-            for arg in fastapi_annotations
+-            if isinstance(arg, (params.Param, params.Body, params.Depends))
+-        ]
+-        if fastapi_specific_annotations:
+-            fastapi_annotation: Union[FieldInfo, params.Depends, None] = (
+-                fastapi_specific_annotations[-1]
+-            )
++        ])
++        current_annotation = type_annotation
++
++    fastapi_specific_annotations = [
++        arg
++        for arg in fastapi_annotations
++        if isinstance(arg, (params.Param, params.Body, params.Depends))
++    ]
++    if fastapi_specific_annotations:
++        fastapi_annotation: Union[FieldInfo, params.Depends, None] = (
++            fastapi_specific_annotations[-1]
++        )
++    else:
++        fastapi_annotation = None
++    # Set default for Annotated FieldInfo
++    if isinstance(fastapi_annotation, FieldInfo):
++        # Copy `field_info` because we mutate `field_info.default` below.
++        field_info = copy_field_info(
++            field_info=fastapi_annotation, annotation=use_annotation
++        )
++        assert (
++            field_info.default is Undefined or field_info.default is RequiredParam
++        ), (
++            f"`{field_info.__class__.__name__}` default value cannot be set in"
++            f" `Annotated` for {param_name!r}. Set the default value with `=` instead."
++        )
++        if value is not inspect.Signature.empty:
++            assert not is_path_param, "Path parameters cannot have default values"
++            field_info.default = value
+         else:
+-            fastapi_annotation = None
+-        # Set default for Annotated FieldInfo
+-        if isinstance(fastapi_annotation, FieldInfo):
+-            # Copy `field_info` because we mutate `field_info.default` below.
+-            field_info = copy_field_info(
+-                field_info=fastapi_annotation, annotation=use_annotation
+-            )
+-            assert (
+-                field_info.default is Undefined or field_info.default is RequiredParam
+-            ), (
+-                f"`{field_info.__class__.__name__}` default value cannot be set in"
+-                f" `Annotated` for {param_name!r}. Set the default value with `=` instead."
+-            )
+-            if value is not inspect.Signature.empty:
+-                assert not is_path_param, "Path parameters cannot have default values"
+-                field_info.default = value
+-            else:
+-                field_info.default = RequiredParam
+-        # Get Annotated Depends
+-        elif isinstance(fastapi_annotation, params.Depends):
+-            depends = fastapi_annotation
++            field_info.default = RequiredParam
++    # Get Annotated Depends
++    elif isinstance(fastapi_annotation, params.Depends):
++        depends = fastapi_annotation
+     # Get Depends from default value
+     if isinstance(value, params.Depends):
+         assert depends is None, (
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..850c7359
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,34 @@
++from fastapi import FastAPI, Body, Query
++from fastapi.dependencies.utils import analyze_param
++from pydantic import BaseModel
++from typing import Annotated
++
++class Pie(BaseModel):
++    name: str
++
++def test_nested_annotated():
++    # Nested Annotated: Annotated[Annotated[Pie, "meta1"], "meta2"]
++    # This should be treated as a Body parameter because Pie is a BaseModel.
++    annotation = Annotated[Annotated[Pie, "meta1"], "meta2"]
++    result = analyze_param(
++        param_name="pie",
++        annotation=annotation,
++        value=None, # Not using a default value for simplicity
++        is_path_param=False,
++    )
++    
++    # If it's treated as a Body parameter, result.field_info should be a Body instance
++    # or at least not a Query/Path/Header/Cookie.
++    # In FastAPI, Body is a subclass of FieldInfo.
++    
++    from fastapi.params import Body as BodyParam
++    if isinstance(result.field, BodyParam):
++        print("Correct: Treated as Body parameter")
++    else:
++        print(f"Incorrect: Treated as {type(result.field)} parameter")
++        # If it's a Query parameter, it's incorrect.
++        # Let's see what it actually is.
++        print(f"Field: {result.field}")
++
++if __name__ == "__main__":
++    test_nested_annotated()

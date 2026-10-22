@@ -1,0 +1,120 @@
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index dbc93d28..e519c978 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -73,6 +73,30 @@ status_code_ranges: Dict[str, str] = {
+     "5XX": "Server Error",
+     "DEFAULT": "Default Response",
+ }
++def merge_security_definitions(
++    existing: Dict[str, Any], new: Dict[str, Any]
++) -> None:
++    for security_name, security_definition in new.items():
++        if security_name in existing:
++            existing_definition = existing[security_name]
++            if (
++                existing_definition.get("type") == "oauth2"
++                and security_definition.get("type") == "oauth2"
++            ):
++                existing_flows = existing_definition.get("flows", {})
++                new_flows = security_definition.get("flows", {})
++                for flow_name, flow_def in new_flows.items():
++                    if flow_name in existing_flows:
++                        existing_flows[flow_name].setdefault("scopes", {}).update(
++                            flow_def.get("scopes", {})
++                        )
++                    else:
++                        existing_flows[flow_name] = flow_def
++                existing_definition["flows"] = existing_flows
++            else:
++                existing[security_name] = security_definition
++        else:
++            existing[security_name] = security_definition
+ 
+ 
+ def get_openapi_security_definitions(
+@@ -87,7 +111,7 @@ def get_openapi_security_definitions(
+             exclude_none=True,
+         )
+         security_name = security_requirement.security_scheme.scheme_name
+-        security_definitions[security_name] = security_definition
++        merge_security_definitions(security_definitions, {security_name: security_definition})
+         operation_security.append({security_name: security_requirement.scopes})
+     return security_definitions, operation_security
+ 
+@@ -280,7 +304,7 @@ def get_openapi_path(
+             if operation_security:
+                 operation.setdefault("security", []).extend(operation_security)
+             if security_definitions:
+-                security_schemes.update(security_definitions)
++                merge_security_definitions(security_schemes, security_definitions)
+             operation_parameters = _get_openapi_operation_parameters(
+                 dependant=route.dependant,
+                 model_name_map=model_name_map,
+@@ -520,8 +544,8 @@ def get_openapi(
+                 if path:
+                     paths.setdefault(route.path_format, {}).update(path)
+                 if security_schemes:
+-                    components.setdefault("securitySchemes", {}).update(
+-                        security_schemes
++                    merge_security_definitions(
++                        components.setdefault("securitySchemes", {}), security_schemes
+                     )
+                 if path_definitions:
+                     definitions.update(path_definitions)
+@@ -539,8 +563,8 @@ def get_openapi(
+                 if path:
+                     webhook_paths.setdefault(webhook.path_format, {}).update(path)
+                 if security_schemes:
+-                    components.setdefault("securitySchemes", {}).update(
+-                        security_schemes
++                    merge_security_definitions(
++                        components.setdefault("securitySchemes", {}), security_schemes
+                     )
+                 if path_definitions:
+                     definitions.update(path_definitions)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..f16582ba
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,39 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer
++import json
++
++app = FastAPI()
++
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
++
++def get_current_user_1(token: str = Security(oauth2_scheme, scopes=["scope1"])):
++    return token
++
++def get_current_user_2(token: str = Security(oauth2_scheme, scopes=["scope2"])):
++    return token
++
++@app.get("/route1", dependencies=[Depends(get_current_user_1)])
++def route1():
++    return {"message": "route1"}
++
++@app.get("/route2", dependencies=[Depends(get_current_user_2)])
++def route2():
++    return {"message": "route2"}
++
++if __name__ == "__main__":
++    schema = app.openapi()
++    security_schemes = schema.get("components", {}).get("securitySchemes", {})
++    
++    if not security_schemes:
++        print("No security schemes found!")
++        exit(1)
++        
++    scheme_name = list(security_schemes.keys())[0]
++    # OAuth2PasswordBearer uses 'password' flow
++    scopes = security_schemes[scheme_name]["flows"]["password"]["scopes"]
++    
++    print(f"Scheme name: {scheme_name}")
++    print(f"Scopes: {scopes}")
++    
++    assert "scope1" in scopes and "scope2" in scopes, f"Expected scope1 and scope2, got {scopes}"
++    print("Success!")

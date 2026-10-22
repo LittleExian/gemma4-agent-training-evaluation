@@ -1,0 +1,66 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index e5ac51d5..26c58aed 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -16,9 +16,11 @@ from typing import (
+ )
+ 
+ import anyio
++from pydantic import Json
+ from fastapi import params
+ from fastapi._compat import (
+     ModelField,
++    PYDANTIC_V2,
+     RequiredParam,
+     Undefined,
+     _regenerate_error_with_loc,
+@@ -731,7 +733,10 @@ def _get_multidict_value(
+ ) -> Any:
+     alias = alias or get_validation_alias(field)
+     if is_sequence_field(field) and isinstance(values, (ImmutableMultiDict, Headers)):
+-        value = values.getlist(alias)
++        if PYDANTIC_V2 and getattr(field.field_info, "metadata", None) and Json in field.field_info.metadata:
++            value = values.get(alias, None)
++        else:
++            value = values.getlist(alias)
+     else:
+         value = values.get(alias, None)
+     if (
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..52849575
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,32 @@
++
++from fastapi import FastAPI, Form
++from fastapi.testclient import TestClient
++from pydantic import Json
++from typing import Annotated, List
++import pytest
++
++app = FastAPI()
++
++@app.post("/upload")
++def upload(
++    tags: Annotated[Json[List[str]], Form()]
++):
++    return {"tags": tags}
++
++client = TestClient(app)
++
++def test_json_form():
++    # Client sends JSON string in form field
++    response = client.post("/upload", data={"tags": '["abc", "def"]'})
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"tags": ["abc", "def"]}
++
++if __name__ == "__main__":
++    try:
++        test_json_form()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()

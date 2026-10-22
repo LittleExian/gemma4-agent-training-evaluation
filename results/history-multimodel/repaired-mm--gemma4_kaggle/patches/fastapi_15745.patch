@@ -1,0 +1,95 @@
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 21a1385a2..81ff4bb4b 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -1002,6 +1002,59 @@ class APIRoute(routing.Route):
+         return match, child_scope
+ 
+ 
++class RouterRoute(BaseRoute):
++    def __init__(
++        self,
++        router: "APIRouter",
++        prefix: str = "",
++        tags: list[str | Enum] | None = None,
++        dependencies: Sequence[params.Depends] | None = None,
++        responses: dict[int | str, dict[str, Any]] | None = None,
++        callbacks: list[BaseRoute] | None = None,
++        deprecated: bool | None = None,
++        include_in_schema: bool = True,
++    ):
++        self.router = router
++        self.prefix = prefix
++        self.tags = tags
++        self.dependencies = dependencies
++        self.responses = responses
++        self.callbacks = callbacks
++        self.deprecated = deprecated
++        self.include_in_schema = include_in_schema
++
++    def matches(self, scope: Scope) -> tuple[Match, Scope]:
++        if not scope["path"].startswith(self.prefix):
++            return Match.NONE, scope
++
++        # Strip prefix
++        new_path = scope["path"][len(self.prefix):]
++        if not new_path.startswith("/"):
++            new_path = "/" + new_path
++
++        child_scope = scope.copy()
++        child_scope["path"] = new_path
++
++        return self.router.matches(child_scope)
++
++    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
++        # Solve dependencies applied during include_router
++        if self.dependencies:
++            astack = scope["fastapi_inner_astack"]
++            dependant = get_dependant(
++                path=self.prefix,
++                call=lambda: None,
++                scope="router_route",
++            )
++            dependant.dependencies = [
++                get_parameterless_sub_dependant(depends=d, path=self.prefix)
++                for d in self.dependencies
++            ]
++            await solve_dependencies(dependant, astack)
++
++        await self.router.handle(scope, receive, send)
++
++
+ class APIRouter(routing.Router):
+     """
+     `APIRouter` class, used to group *path operations*, for example to structure
+@@ -1828,6 +1881,30 @@ class APIRouter(routing.Router):
+             router.lifespan_context,
+         )
+ 
++    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
++        # Ensure astack exists
++        if "fastapi_inner_astack" not in scope:
++            async with AsyncExitStack() as request_stack:
++                scope["fastapi_inner_astack"] = request_stack
++                await super().handle(scope, receive, send)
++                return
++
++        # Solve APIRouter's own dependencies
++        if self.dependencies:
++            astack = scope["fastapi_inner_astack"]
++            dependant = get_dependant(
++                path=self.prefix,
++                call=lambda: None,
++                scope="router",
++            )
++            dependant.dependencies = [
++                get_parameterless_sub_dependant(depends=d, path=self.prefix)
++                for d in self.dependencies
++            ]
++            await solve_dependencies(dependant, astack)
++
++        await super().handle(scope, receive, send)
++
+     def get(
+         self,
+         path: Annotated[

@@ -1,0 +1,129 @@
+diff --git a/check_metadata.py b/check_metadata.py
+new file mode 100644
+index 00000000..de46695b
+--- /dev/null
++++ b/check_metadata.py
+@@ -0,0 +1,18 @@
++
++from pydantic import Field, Json
++from pydantic.fields import FieldInfo
++from typing import List, Annotated
++import pprint
++
++# In Pydantic v2, Json[T] is often an Annotated[T, Json]
++# Let's see what happens when we create a model with Json[List[str]]
++from pydantic import BaseModel
++
++class MyModel(BaseModel):
++    tags: Json[List[str]]
++
++field = MyModel.model_fields['tags']
++print("Field Info:")
++pprint.pprint(field)
++print("\nMetadata:")
++pprint.pprint(field.metadata)
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index dae78a32..2c360d1b 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -15,7 +15,7 @@ from typing import (
+ from fastapi._compat import shared
+ from fastapi.openapi.constants import REF_TEMPLATE
+ from fastapi.types import IncEx, ModelNameMap, UnionType
+-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
++from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, Json
+ from pydantic import PydanticSchemaGenerationError as PydanticSchemaGenerationError
+ from pydantic import PydanticUndefinedAnnotation as PydanticUndefinedAnnotation
+ from pydantic import ValidationError as ValidationError
+@@ -404,6 +404,9 @@ def is_scalar_field(field: ModelField) -> bool:
+ 
+ 
+ def is_sequence_field(field: ModelField) -> bool:
++    if hasattr(field.field_info, "metadata"):
++        if any(getattr(m, "__name__", None) == "Json" for m in field.field_info.metadata):
++            return False
+     return shared.field_annotation_is_sequence(field.field_info.annotation)
+ 
+ 
+diff --git a/inspect_json.py b/inspect_json.py
+new file mode 100644
+index 00000000..344dbb45
+--- /dev/null
++++ b/inspect_json.py
+@@ -0,0 +1,38 @@
++
++from fastapi import FastAPI, Form
++from pydantic import Json
++from typing import Annotated, List
++from fastapi.dependencies.utils import get_cached_model_fields
++import inspect
++
++app = FastAPI()
++
++@app.post("/upload")
++def upload(
++    tags: Annotated[Json[List[str]], Form()]
++):
++    return {"tags": tags}
++
++# Find the route
++route = next(r for r in app.routes if r.path == "/upload")
++# The route's endpoint is the 'upload' function
++endpoint = route.endpoint
++
++# Get the signature of the endpoint
++sig = inspect.signature(endpoint)
++# Find the 'tags' parameter
++param = sig.parameters['tags']
++# The default value of the parameter is the Form() object
++# But we want the field info that FastAPI creates.
++
++# FastAPI stores the solved dependencies in the route.
++# Let's look at how FastAPI handles this.
++# Actually, we can just look at the route's endpoint's __fastapi_params__ if it exists.
++# Or we can look at the route's endpoint's dependencies.
++
++print(f"Param default: {param.default}")
++print(f"Param annotation: {param.annotation}")
++
++# Let's try to find where FastAPI stores the ModelField
++# In FastAPI, the route's endpoint is wrapped.
++# Let's just print the annotation and see.
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..52849575
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,32 @@
++
++from fastapi import FastAPI, Form
++from fastapi.testclient import TestClient
++from pydantic import Json
++from typing import Annotated, List
++import pytest
++
++app = FastAPI()
++
++@app.post("/upload")
++def upload(
++    tags: Annotated[Json[List[str]], Form()]
++):
++    return {"tags": tags}
++
++client = TestClient(app)
++
++def test_json_form():
++    # Client sends JSON string in form field
++    response = client.post("/upload", data={"tags": '["abc", "def"]'})
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"tags": ["abc", "def"]}
++
++if __name__ == "__main__":
++    try:
++        test_json_form()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()

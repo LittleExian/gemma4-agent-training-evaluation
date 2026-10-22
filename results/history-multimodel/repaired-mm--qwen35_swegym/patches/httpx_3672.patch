@@ -1,0 +1,73 @@
+diff --git a/src/ahttpx/_parsers.py b/src/ahttpx/_parsers.py
+index 8a52a56..04042c1 100644
+--- a/src/ahttpx/_parsers.py
++++ b/src/ahttpx/_parsers.py
+@@ -80,13 +80,14 @@ class HTTPParser:
+     client.recv_status_line()
+     client.recv_headers()
+     client.recv_body()
+-    client.complete()
++    client.reset()
+     client.close()
+     """
+     def __init__(self, stream: Stream, mode: str) -> None:
+         self.stream = stream
+         self.parser = ReadAheadParser(stream)
+         self.mode = {'CLIENT': Mode.CLIENT, 'SERVER': Mode.SERVER}[mode]
++        self.keep_alive = True
+ 
+         # Track state...
+         if self.mode == Mode.CLIENT:
+@@ -375,7 +376,7 @@ class HTTPParser:
+             self.recv_state = State.DONE
+         return body
+ 
+-    async def complete(self):
++    async def reset(self):
+         is_fully_complete = self.send_state == State.DONE and self.recv_state == State.DONE
+         is_keepalive = self.send_keep_alive and self.recv_keep_alive
+ 
+@@ -385,10 +386,10 @@ class HTTPParser:
+ 
+         if self.mode == Mode.CLIENT:
+             self.send_state = State.SEND_METHOD_LINE
+-            self.recv_state = State.WAIT
++            self.recv_state = State.RECV_METHOD_LINE
+         else:
+             self.recv_state = State.RECV_METHOD_LINE
+-            self.send_state = State.WAIT
++            self.send_state = State.SEND_STATUS_LINE
+ 
+         self.send_content_length = 0
+         self.recv_content_length = 0
+diff --git a/src/ahttpx/_server.py b/src/ahttpx/_server.py
+index a9103cc..b530fa0 100644
+--- a/src/ahttpx/_server.py
++++ b/src/ahttpx/_server.py
+@@ -16,6 +16,11 @@ __all__ = [
+ logger = logging.getLogger("httpx.server")
+ 
+ 
++def handle_keyboard_exception():
++    """Handle keyboard exceptions gracefully on server exit."""
++    pass
++
++
+ class ConnectionClosed(Exception):
+     pass
+ 
+@@ -118,7 +123,13 @@ async def serve_http(endpoint):
+     async with await backend.serve("127.0.0.1", 8080, handler) as server:
+         server = HTTPServer(server.host, server.port)
+         logger.info(f"Serving on {server.url} (Press CTRL+C to quit)")
+-        yield server
++        try:
++            yield server
++        except KeyboardInterrupt:
++            handle_keyboard_exception()
++        finally:
++            # Close streams on server exit
++            await backend.close()
+ 
+ 
+ async def run(app):

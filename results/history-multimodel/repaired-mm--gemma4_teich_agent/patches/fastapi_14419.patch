@@ -1,0 +1,83 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index d6359c0f..c379b762 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -43,11 +43,25 @@ class Dependant:
+     path: Optional[str] = None
+     scope: Union[Literal["function", "request"], None] = None
+ 
++    @cached_property
++    def uses_scopes(self) -> bool:
++        if self.security_scopes_param_name is not None:
++            return True
++        if self.call is not None:
++            from fastapi.security.oauth2 import OAuth2
++            from fastapi.security.open_id_connect_url import OpenIdConnect
++            if isinstance(self.call, (OAuth2, OpenIdConnect)):
++                return True
++        for dependant in self.dependencies:
++            if dependant.uses_scopes:
++                return True
++        return False
++
+     @cached_property
+     def cache_key(self) -> DependencyCacheKey:
+         return (
+             self.call,
+-            tuple(sorted(set(self.security_scopes or []))),
++            tuple(sorted(set(self.security_scopes or []))) if self.uses_scopes else (),
+             self.computed_scope or "",
+         )
+ 
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..64cea95c
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,46 @@
++
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer, SecurityScopes
++from starlette.requests import Request
++from starlette.responses import Response
++import asyncio
++from httpx import AsyncClient, ASGITransport
++
++global count_a
++count_a = 0
++
++async def dependency_a():
++    global count_a
++    count_a += 1
++    return "a"
++
++async def dependency_b(a=Depends(dependency_a)):
++    return f"b-{a}"
++
++async def dependency_c(a=Depends(dependency_a)):
++    return f"c-{a}"
++
++async def main():
++    global count_a
++    count_a = 0
++    
++    app = FastAPI()
++    
++    @app.get("/")
++    async def root(
++        b=Security(dependency_b, scopes=["scope_b"]),
++        c=Security(dependency_c, scopes=["scope_c"]),
++    ):
++        return {"b": b, "c": c}
++    
++    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
++        await ac.get("/")
++    
++    print(f"Dependency A executed {count_a} times")
++    if count_a == 1:
++        print("SUCCESS: Dependency A was cached")
++    else:
++        print(f"FAILURE: Dependency A was executed {count_a} times")
++
++if __name__ == "__main__":
++    asyncio.run(main())

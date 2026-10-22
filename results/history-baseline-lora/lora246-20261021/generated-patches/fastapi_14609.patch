@@ -1,0 +1,201 @@
+diff --git a/fastapi/_compat/main.py b/fastapi/_compat/main.py
+index 95053a23..a4c4d1a2 100644
+--- a/fastapi/_compat/main.py
++++ b/fastapi/_compat/main.py
+@@ -159,25 +159,9 @@ def serialize_sequence_value(*, field: ModelField, value: Any) -> Sequence[Any]:
+ 
+ 
+ def get_compat_model_name_map(fields: list[ModelField]) -> ModelNameMap:
+-    v1_model_fields = [
+-        field for field in fields if isinstance(field, may_v1.ModelField)
+-    ]
+-    if v1_model_fields:
+-        from fastapi._compat import v1
+-
+-        v1_flat_models = v1.get_flat_models_from_fields(
+-            v1_model_fields,  # type: ignore[arg-type]
+-            known_models=set(),
+-        )
+-        all_flat_models = v1_flat_models
+-    else:
+-        all_flat_models = set()
+-
+     v2_model_fields = [field for field in fields if isinstance(field, v2.ModelField)]
+     v2_flat_models = v2.get_flat_models_from_fields(v2_model_fields, known_models=set())
+-    all_flat_models = all_flat_models.union(v2_flat_models)  # type: ignore[arg-type]
+-
+-    model_name_map = v2.get_model_name_map(all_flat_models)  # type: ignore[arg-type]
++    model_name_map = v2.get_model_name_map(v2_flat_models)  # type: ignore[arg-type]
+     return model_name_map
+ 
+ 
+@@ -193,33 +177,13 @@ def get_definitions(
+     ],
+     dict[str, dict[str, Any]],
+ ]:
+-    if sys.version_info < (3, 14):
+-        v1_fields = [field for field in fields if isinstance(field, may_v1.ModelField)]
+-        v1_field_maps, v1_definitions = may_v1.get_definitions(
+-            fields=v1_fields,  # type: ignore[arg-type]
+-            model_name_map=model_name_map,
+-            separate_input_output_schemas=separate_input_output_schemas,
+-        )
+-
+-        v2_fields = [field for field in fields if isinstance(field, v2.ModelField)]
+-        v2_field_maps, v2_definitions = v2.get_definitions(
+-            fields=v2_fields,
+-            model_name_map=model_name_map,
+-            separate_input_output_schemas=separate_input_output_schemas,
+-        )
+-        all_definitions = {**v1_definitions, **v2_definitions}
+-        all_field_maps = {**v1_field_maps, **v2_field_maps}  # type: ignore[misc]
+-        return all_field_maps, all_definitions
+-
+-    # Pydantic v1 is not supported since Python 3.14
+-    else:
+-        v2_fields = [field for field in fields if isinstance(field, v2.ModelField)]
+-        v2_field_maps, v2_definitions = v2.get_definitions(
+-            fields=v2_fields,
+-            model_name_map=model_name_map,
+-            separate_input_output_schemas=separate_input_output_schemas,
+-        )
+-        return v2_field_maps, v2_definitions
++    v2_fields = [field for field in fields if isinstance(field, v2.ModelField)]
++    v2_field_maps, v2_definitions = v2.get_definitions(
++        fields=v2_fields,
++        model_name_map=model_name_map,
++        separate_input_output_schemas=separate_input_output_schemas,
++    )
++    return v2_field_maps, v2_definitions
+ 
+ 
+ def get_schema_from_model_field(
+@@ -232,16 +196,6 @@ def get_schema_from_model_field(
+     ],
+     separate_input_output_schemas: bool = True,
+ ) -> dict[str, Any]:
+-    if isinstance(field, may_v1.ModelField):
+-        from fastapi._compat import v1
+-
+-        return v1.get_schema_from_model_field(
+-            field=field,
+-            model_name_map=model_name_map,
+-            field_mapping=field_mapping,
+-            separate_input_output_schemas=separate_input_output_schemas,
+-        )
+-
+     return v2.get_schema_from_model_field(
+         field=field,  # type: ignore[arg-type]
+         model_name_map=model_name_map,
+@@ -251,14 +205,8 @@ def get_schema_from_model_field(
+ 
+ 
+ def _is_model_field(value: Any) -> bool:
+-    if isinstance(value, may_v1.ModelField):
+-        return True
+-
+     return isinstance(value, v2.ModelField)
+ 
+ 
+ def _is_model_class(value: Any) -> bool:
+-    if lenient_issubclass(value, may_v1.BaseModel):
+-        return True
+-
+     return lenient_issubclass(value, v2.BaseModel)  # type: ignore[attr-defined]
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index cbcb98e1..a2b433b7 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -11,7 +11,7 @@ from typing import (
+     cast,
+ )
+ 
+-from fastapi._compat import may_v1, shared
++from fastapi._compat import shared
+ from fastapi.openapi.constants import REF_TEMPLATE
+ from fastapi.types import IncEx, ModelNameMap, UnionType
+ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
+@@ -175,7 +175,7 @@ class ModelField:
+                 None,
+             )
+         except ValidationError as exc:
+-            return None, may_v1._regenerate_error_with_loc(
++            return None, shared._regenerate_error_with_loc(
+                 errors=exc.errors(include_url=False), loc_prefix=loc
+             )
+ 
+diff --git a/fastapi/utils.py b/fastapi/utils.py
+index 8ae50aa1..5b8b33cf 100644
+--- a/fastapi/utils.py
++++ b/fastapi/utils.py
+@@ -18,9 +18,7 @@ from fastapi._compat import (
+     Undefined,
+     UndefinedType,
+     Validator,
+-    annotation_is_pydantic_v1,
+     lenient_issubclass,
+-    may_v1,
+ )
+ from fastapi.datastructures import DefaultPlaceholder, DefaultType
+ from fastapi.exceptions import FastAPIDeprecationWarning
+@@ -81,54 +79,16 @@ def create_model_field(
+     field_info: Optional[FieldInfo] = None,
+     alias: Optional[str] = None,
+     mode: Literal["validation", "serialization"] = "validation",
+-    version: Literal["1", "auto"] = "auto",
+ ) -> ModelField:
+     class_validators = class_validators or {}
+ 
+-    v1_model_config = may_v1.BaseConfig
+-    v1_field_info = field_info or may_v1.FieldInfo()
+-    v1_kwargs = {
+-        "name": name,
+-        "field_info": v1_field_info,
+-        "type_": type_,
+-        "class_validators": class_validators,
+-        "default": default,
+-        "required": required,
+-        "model_config": v1_model_config,
+-        "alias": alias,
+-    }
+-
+-    if (
+-        annotation_is_pydantic_v1(type_)
+-        or isinstance(field_info, may_v1.FieldInfo)
+-        or version == "1"
+-    ):
+-        from fastapi._compat import v1
+-
+-        try:
+-            return v1.ModelField(**v1_kwargs)  # type: ignore[return-value]
+-        except RuntimeError:
+-            raise fastapi.exceptions.FastAPIError(
+-                _invalid_args_message.format(type_=type_)
+-            ) from None
+-    else:
+-        field_info = field_info or FieldInfo(
+-            annotation=type_, default=default, alias=alias
+-        )
+-        kwargs = {"mode": mode, "name": name, "field_info": field_info}
+-        try:
+-            return v2.ModelField(**kwargs)  # type: ignore[return-value,arg-type]
+-        except PydanticSchemaGenerationError:
+-            raise fastapi.exceptions.FastAPIError(
+-                _invalid_args_message.format(type_=type_)
+-            ) from None
+-    # Pydantic v2 is not installed, but it's not a Pydantic v1 ModelField, it could be
+-    # a Pydantic v1 type, like a constrained int
+-    from fastapi._compat import v1
+-
++    field_info = field_info or FieldInfo(
++        annotation=type_, default=default, alias=alias
++    )
++    kwargs = {"mode": mode, "name": name, "field_info": field_info}
+     try:
+-        return v1.ModelField(**v1_kwargs)
+-    except RuntimeError:
++        return v2.ModelField(**kwargs)  # type: ignore[return-value,arg-type]
++    except PydanticSchemaGenerationError:
+         raise fastapi.exceptions.FastAPIError(
+             _invalid_args_message.format(type_=type_)
+         ) from None

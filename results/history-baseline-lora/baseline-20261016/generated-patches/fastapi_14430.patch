@@ -1,0 +1,68 @@
+diff --git a/fastapi/_compat/shared.py b/fastapi/_compat/shared.py
+index cabf4822..c342ffab 100644
+--- a/fastapi/_compat/shared.py
++++ b/fastapi/_compat/shared.py
+@@ -82,6 +82,8 @@ def _annotation_is_sequence(annotation: Union[Type[Any], None]) -> bool:
+ 
+ def field_annotation_is_sequence(annotation: Union[Type[Any], None]) -> bool:
+     origin = get_origin(annotation)
++    if origin is Annotated:
++        return field_annotation_is_sequence(get_args(annotation)[0])
+     if origin is Union or origin is UnionType:
+         for arg in get_args(annotation):
+             if field_annotation_is_sequence(arg):
+@@ -129,6 +131,8 @@ def field_annotation_is_scalar(annotation: Any) -> bool:
+ 
+ def field_annotation_is_scalar_sequence(annotation: Union[Type[Any], None]) -> bool:
+     origin = get_origin(annotation)
++    if origin is Annotated:
++        return field_annotation_is_scalar_sequence(get_args(annotation)[0])
+     if origin is Union or origin is UnionType:
+         at_least_one_scalar_sequence = False
+         for arg in get_args(annotation):
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..9d341765
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,40 @@
++from typing import List, Optional, Sequence, Union, Annotated
++from fastapi._compat import shared
++import sys
++
++def test():
++    test_cases = [
++        (List[int], True),
++        (list, True),
++        (Optional[List[int]], True),
++        (Union[List[int], None], True),
++        (list[int] if sys.version_info >= (3, 9) else List[int], True),
++        (list[int] | None if sys.version_info >= (3, 10) else Optional[List[int]], True),
++        (list[int] | list[str] if sys.version_info >= (3, 10) else Union[List[int], List[str]], True),
++        (Annotated[List[int], "foo"], True),
++        (Annotated[list[int] | None, "foo"] if sys.version_info >= (3, 10) else Annotated[Optional[List[int]], "foo"], True),
++    ]
++
++    for annotation, expected in test_cases:
++        result = shared.field_annotation_is_sequence(annotation)
++        print(f"field_annotation_is_sequence({annotation}): {result} (expected {expected})")
++        if result != expected:
++            print("FAILED")
++
++    test_cases_scalar = [
++        (List[int], True),
++        (Optional[List[int]], True),
++        (list[int] | None if sys.version_info >= (3, 10) else Optional[List[int]], True),
++        (List[int] | List[str] if sys.version_info >= (3, 10) else Union[List[int], List[str]], True),
++        (Annotated[List[int], "foo"], True),
++        (Annotated[list[int] | None, "foo"] if sys.version_info >= (3, 10) else Annotated[Optional[List[int]], "foo"], True),
++    ]
++
++    for annotation, expected in test_cases_scalar:
++        result = shared.field_annotation_is_scalar_sequence(annotation)
++        print(f"field_annotation_is_scalar_sequence({annotation}): {result} (expected {expected})")
++        if result != expected:
++            print("FAILED")
++
++if __name__ == '__main__':
++    test()

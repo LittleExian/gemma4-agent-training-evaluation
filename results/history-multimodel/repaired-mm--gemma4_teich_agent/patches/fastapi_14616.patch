@@ -1,0 +1,74 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index e5ac51d5..46719bf7 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -16,6 +16,7 @@ from typing import (
+ )
+ 
+ import anyio
++from pydantic import Json
+ from fastapi import params
+ from fastapi._compat import (
+     ModelField,
+@@ -39,6 +40,7 @@ from fastapi._compat import (
+     sequence_types,
+     serialize_sequence_value,
+     value_is_sequence,
++    PYDANTIC_V2,
+ )
+ from fastapi.background import BackgroundTasks
+ from fastapi.concurrency import (
+@@ -726,11 +728,17 @@ def _validate_value_with_model_field(
+         return v_, []
+ 
+ 
++def _is_json_field(field: ModelField) -> bool:
++    if PYDANTIC_V2 and hasattr(field.field_info, "metadata"):
++        return any(isinstance(m, Json) for m in field.field_info.metadata)
++    return False
++
++
+ def _get_multidict_value(
+     field: ModelField, values: Mapping[str, Any], alias: Union[str, None] = None
+ ) -> Any:
+     alias = alias or get_validation_alias(field)
+-    if is_sequence_field(field) and isinstance(values, (ImmutableMultiDict, Headers)):
++    if is_sequence_field(field) and isinstance(values, (ImmutableMultiDict, Headers)) and not _is_json_field(field):
+         value = values.getlist(alias)
+     else:
+         value = values.get(alias, None)
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..38a9b07b
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,29 @@
++from fastapi import FastAPI, Form
++from pydantic import BaseModel, Json
++from typing import List
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++@app.post("/test")
++async def test(tags: Json[List[str]] = Form()):
++    return {"tags": tags}
++
++client = TestClient(app)
++
++def test_json_list_form():
++    # The input is a JSON string representing a list of strings
++    # In a form, this is sent as a single field with the JSON string as value
++    response = client.post("/test", data={"tags": '["abc", "def"]'})
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"tags": ["abc", "def"]}
++
++if __name__ == "__main__":
++    try:
++        test_json_list_form()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()

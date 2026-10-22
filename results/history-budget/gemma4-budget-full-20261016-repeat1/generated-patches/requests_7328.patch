@@ -1,0 +1,159 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..178cc2a0
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,63 @@
++
++import requests
++from requests.models import Response
++from requests.sessions import Session
++from unittest.mock import MagicMock
++
++def test_redirect_history_self_reference():
++    session = Session()
++    session.max_redirects = 5
++    
++    # Mock adapter
++    adapter = MagicMock()
++    session.get_adapter = lambda *args, **kwargs: adapter
++    
++    # Create a sequence of responses
++    # 1st response: redirect to /2
++    resp1 = Response()
++    resp1.status_code = 302
++    resp1.url = "http://example.com/1"
++    resp1.headers = {"Location": "http://example.com/2"}
++    resp1.raw = MagicMock()
++    
++    # 2nd response: redirect to /3
++    resp2 = Response()
++    resp2.status_code = 302
++    resp2.url = "http://example.com/2"
++    resp2.headers = {"Location": "http://example.com/3"}
++    resp2.raw = MagicMock()
++    
++    # 3rd response: OK
++    resp3 = Response()
++    resp3.status_code = 200
++    resp3.url = "http://example.com/3"
++    resp3.raw = MagicMock()
++    
++    adapter.send.side_effect = [resp1, resp2, resp3]
++    
++    # Use requests.Request to create a request object
++    req = requests.Request("GET", "http://example.com/1")
++    prepared_req = session.prepare_request(req)
++    
++    resp = session.send(prepared_req, allow_redirects=True)
++    
++    print(f"Final response: {resp}")
++    print(f"History: {resp.history}")
++    
++    for i, r in enumerate(resp.history):
++        print(f"History item {i}: {r}")
++        if r is resp:
++            print("SELF REFERENCE FOUND!")
++            assert False, "Response self-reference in redirect history"
++    
++    print("No self-reference found.")
++
++if __name__ == "__main__":
++    try:
++        test_redirect_history_self_reference()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)
+diff --git a/repro.py` b/repro.py`
+new file mode 100644
+index 00000000..9adf99de
+--- /dev/null
++++ b/repro.py`
+@@ -0,0 +1,64 @@
++
++import requests
++from requests.models import Response
++from requests.requests import Request
++from requests.sessions import Session
++from unittest.mock import MagicMock
++
++def test_redirect_history_self_reference():
++    session = Session()
++    session.max_redirects = 5
++    
++    # Mock adapter
++    adapter = MagicMock()
++    session.adapter_prepare_request = lambda *args, **kwargs: MagicMock()
++    session.get_adapter = lambda *args, **kwargs: adapter
++    
++    # Create a sequence of responses
++    # 1st response: redirect to /2
++    resp1 = Response()
++    resp1.status_code = 302
++    resp1.url = "http://example.com/1"
++    resp1.headers = {"Location": "http://example.com/2"}
++    resp1.raw = MagicMock()
++    
++    # 2nd response: redirect to /3
++    resp2 = Response()
++    resp2.status_code = 302
++    resp2.url = "http://example.com/2"
++    resp2.headers = {"Location": "http://example.com/3"}
++    resp2.raw = MagicMock()
++    
++    # 3rd response: OK
++    resp3 = Response()
++    resp3.status_code = 200
++    resp3.url = "http://example.com/3"
++    resp3.raw = MagicMock()
++    
++    adapter.send.side_effect = [resp1, resp2, resp3]
++    
++    req = requests.Request("GET", "http://example.com/1")
++    prepared_req = session.prepare_request(req)
++    
++    resp = session.send(prepared_req, allow_redirects=True)
++    
++    print(f"Final response: {resp}")
++    print(f"History: {resp.history}")
++    
++    for i, r in enumerate(resp.history):
++        print(f"History item {i}: {r}")
++        if r is resp:
++            print("SELF REFERENCE FOUND!")
++            assert False, "Response self-reference in redirect history"
++    
++    print("No self-reference found.")
++
++if __name__ == "__main__":
++    try:
++        test_redirect_history_self_reference()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)
+diff --git a/src/requests/sessions.py b/src/requests/sessions.py
+index 578cc44d..2d6a6c6f 100644
+--- a/src/requests/sessions.py
++++ b/src/requests/sessions.py
+@@ -181,14 +181,13 @@ class SessionRedirectMixin:
+             # Update history and keep track of redirects.
+             # resp.history must ignore the original request in this loop
+             hist.append(resp)
+-            resp.history = hist[1:]
+ 
+             try:
+                 resp.content  # Consume socket so it can be released
+             except (ChunkedEncodingError, ContentDecodingError, RuntimeError):
+                 resp.raw.read(decode_content=False)
+ 
+-            if len(resp.history) >= self.max_redirects:
++            if len(hist) - 1 >= self.max_redirects:
+                 raise TooManyRedirects(
+                     f"Exceeded {self.max_redirects} redirects.", response=resp
+                 )

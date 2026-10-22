@@ -1,0 +1,70 @@
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index dbc93d28..b2e0ca96 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -87,7 +87,23 @@ def get_openapi_security_definitions(
+             exclude_none=True,
+         )
+         security_name = security_requirement.security_scheme.scheme_name
+-        security_definitions[security_name] = security_definition
++        if security_name in security_definitions:
++            existing_def = security_definitions[security_name]
++            if "flows" in existing_def and "flows" in security_definition:
++                existing_flows = existing_def["flows"]
++                new_flows = security_definition["flows"]
++                for flow_type in ["implicit", "password", "clientCredentials", "authorizationCode"]:
++                    if flow_type in new_flows:
++                        if flow_type in existing_flows:
++                            existing_scopes = existing_flows[flow_type].get("scopes", {})
++                            new_scopes = new_flows[flow_type].get("scopes", {})
++                            if isinstance(existing_scopes, dict) and isinstance(new_scopes, dict):
++                                existing_scopes.update(new_scopes)
++                                existing_flows[flow_type]["scopes"] = existing_scopes
++                        else:
++                            existing_flows[flow_type] = new_flows[flow_type]
++        else:
++            security_definitions[security_name] = security_definition
+         operation_security.append({security_name: security_requirement.scopes})
+     return security_definitions, operation_security
+ 
+diff --git a/repro_oauth2_scopes.py b/repro_oauth2_scopes.py
+new file mode 100644
+index 00000000..c7521e49
+--- /dev/null
++++ b/repro_oauth2_scopes.py
+@@ -0,0 +1,35 @@
++from fastapi import FastAPI, Security
++from fastapi.security import OAuth2PasswordBearer
++import json
++
++app = FastAPI()
++
++oauth2_scheme_1 = OAuth2PasswordBearer(
++    tokenUrl="token",
++    scheme_name="my_oauth2",
++    scopes={"read": "Read access"}
++)
++oauth2_scheme_2 = OAuth2PasswordBearer(
++    tokenUrl="token",
++    scheme_name="my_oauth2",
++    scopes={"write": "Write access"}
++)
++
++@app.get("/read")
++def read(token: str = Security(oauth2_scheme_1, scopes=["read"])):
++    return {"message": "read"}
++
++@app.get("/write")
++def write(token: str = Security(oauth2_scheme_2, scopes=["write"])):
++    return {"message": "write"}
++
++openapi_schema = app.openapi()
++security_schemes = openapi_schema["components"]["securitySchemes"]
++my_oauth2_scheme = security_schemes["my_oauth2"]
++scopes = my_oauth2_scheme["flows"]["password"]["scopes"]
++
++print(json.dumps(scopes, indent=2))
++
++expected_scopes = {"read": "Read access", "write": "Write access"}
++assert scopes == expected_scopes, f"Expected {expected_scopes}, got {scopes}"
++print("Success!")

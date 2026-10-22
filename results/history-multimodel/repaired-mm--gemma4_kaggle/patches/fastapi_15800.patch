@@ -1,0 +1,88 @@
+diff --git a/fastapi/applications.py b/fastapi/applications.py
+index c7c551e4e..e5023acce 100644
+--- a/fastapi/applications.py
++++ b/fastapi/applications.py
+@@ -1016,6 +1016,11 @@ class FastAPI(Starlette):
+         self.middleware_stack: ASGIApp | None = None
+         self.setup()
+ 
++    def frontend(self, path: str, directory: str) -> "FastAPI":
++        from fastapi.staticfiles import StaticFiles
++        self.mount(path, app=StaticFiles(directory=directory), name="frontend")
++        return self
++
+     def build_middleware_stack(self) -> ASGIApp:
+         # Duplicate/override from Starlette to add AsyncExitStackMiddleware
+         # inside of ExceptionMiddleware, inside of custom user middlewares
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 4a55fda8a..ed1b79933 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -2033,6 +2033,12 @@ class APIRouter(routing.Router):
+         self.strict_content_type = strict_content_type
+         self._routes_version = 0
+ 
++    def frontend(self, path: str, directory: str) -> "APIRouter":
++        from fastapi.staticfiles import StaticFiles
++        from starlette.routing import Mount
++        self.routes.append(Mount(path, app=StaticFiles(directory=directory), name="frontend"))
++        return self
++
+     def _mark_routes_changed(self) -> None:
+         self._routes_version += 1
+ 
+diff --git a/test_static/index.html b/test_static/index.html
+new file mode 100644
+index 000000000..0f8a8efbc
+--- /dev/null
++++ b/test_static/index.html
+@@ -0,0 +1 @@
++Hello Frontend
+\ No newline at end of file
+diff --git a/verify_frontend.py b/verify_frontend.py
+new file mode 100644
+index 000000000..b558d6970
+--- /dev/null
++++ b/verify_frontend.py
+@@ -0,0 +1,41 @@
++
++from fastapi import FastAPI, APIRouter
++from fastapi.staticfiles import StaticFiles
++from starlette.routing import Mount
++import os
++
++# Create a dummy directory for static files
++os.makedirs("test_static", exist_ok=True)
++with open("test_static/index.html", "w") as f:
++    f.write("Hello Frontend")
++
++def test_fastapi_frontend():
++    app = FastAPI()
++    app.frontend("/", directory="test_static")
++    mounts = [route for route in app.routes if isinstance(route, Mount)]
++    print(f"FastAPI mounts: {mounts}")
++    assert len(mounts) > 0
++    assert mounts[0].path in ["/", ""]
++    assert mounts[0].name == "frontend"
++    print("test_fastapi_frontend passed")
++
++def test_apirouter_frontend():
++    router = APIRouter()
++    router.frontend("/static", directory="test_static")
++    mounts = [route for route in router.routes if isinstance(route, Mount)]
++    print(f"APIRouter mounts: {mounts}")
++    assert len(mounts) > 0
++    assert mounts[0].path == "/static"
++    assert mounts[0].name == "frontend"
++    print("test_apirouter_frontend passed")
++
++if __name__ == "__main__":
++    try:
++        test_fastapi_frontend()
++        test_apirouter_frontend()
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

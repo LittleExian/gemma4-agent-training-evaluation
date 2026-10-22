@@ -1,0 +1,82 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 6c4bf18b..80e94fec 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -2,7 +2,7 @@ import inspect
+ import sys
+ from dataclasses import dataclass, field
+ from functools import cached_property, partial
+-from typing import Any, Callable, List, Optional, Union
++from typing import Any, Callable, Dict, List, Optional, Union
+ 
+ from fastapi._compat import ModelField
+ from fastapi.security.base import SecurityBase
+@@ -191,3 +191,34 @@ class Dependant:
+         if self.is_gen_callable or self.is_async_gen_callable:
+             return "request"
+         return None
++
++    @cached_property
++    def context(self) -> Optional[Dict[str, Any]]:
++        if self.call is None:
++            return None
++        unwrapped = _unwrapped_call(self.call)
++        try:
++            if hasattr(unwrapped, "__code__"):
++                code = unwrapped.__code__
++                filename = code.co_filename
++                lineno = code.co_firstlineno
++                func_name = unwrapped.__name__
++            else:
++                filename = inspect.getsourcefile(unwrapped)
++                lineno = None
++                func_name = getattr(unwrapped, "__name__", str(unwrapped))
++                if lineno is None and filename:
++                    try:
++                        _, lines = inspect.getsourcelines(unwrapped)
++                        lineno = lines[0].lineno
++                    except Exception:
++                        pass
++            return {
++                "file": filename,
++                "line": lineno,
++                "function": func_name,
++                "path": self.path,
++            }
++        except Exception:
++            return None
++
+diff --git a/fastapi/exceptions.py b/fastapi/exceptions.py
+index 0620428b..1f2ecc72 100644
+--- a/fastapi/exceptions.py
++++ b/fastapi/exceptions.py
+@@ -157,10 +157,20 @@ class DependencyScopeError(FastAPIError):
+ class ValidationException(Exception):
+     def __init__(self, errors: Sequence[Any]) -> None:
+         self._errors = errors
++        self.context: Optional[Dict[str, Any]] = None
+ 
+     def errors(self) -> Sequence[Any]:
+         return self._errors
+ 
++    def __str__(self) -> str:
++        message = f"{len(self._errors)} validation errors:\n"
++        for err in self._errors:
++            message += f"  {err}\n"
++        if self.context:
++            ctx = self.context
++            message += f"Context: {ctx.get('method')} {ctx.get('route')} {ctx.get('file')}:{ctx.get('line')} in {ctx.get('function')}\n"
++        return message
++
+ 
+ class RequestValidationError(ValidationException):
+     def __init__(self, errors: Sequence[Any], *, body: Any = None) -> None:
+@@ -177,8 +187,3 @@ class ResponseValidationError(ValidationException):
+         super().__init__(errors)
+         self.body = body
+ 
+-    def __str__(self) -> str:
+-        message = f"{len(self._errors)} validation errors:\n"
+-        for err in self._errors:
+-            message += f"  {err}\n"
+-        return message

@@ -30,3 +30,5 @@ The tool returned exit status 1: **155 advisory entries across 11 packages** (11
 The full machine-readable report is [dependency-audit.json](dependency-audit.json). Historical pins remain unchanged to preserve run provenance. They are **not a vulnerability-free deployment recommendation**. No public inference endpoint or new cloud workload is created by publishing this repository.
 
 A future deployment should use a separate environment, evaluate the listed fixes against the required GPU/model stack, rerun the environment/serialization/LoRA/sandbox controls, and recalculate benchmark results when dependencies change. Do not silently upgrade the running training environment or label an altered environment as this historical run.
+
+The additional historical runtime freezes under `history-sources/` were not independently audited by this report.

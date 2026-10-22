@@ -1,0 +1,139 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index a8546227..1da9480c 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -30,6 +30,16 @@ _SINGLE_CELLS = frozenset(
+ _is_single_cell_widths: Callable[[str], bool] = _SINGLE_CELLS.issuperset
+ 
+ 
++def _get_cell_len(text: str) -> int:
++    """Get the number of cells required to display text."""
++    total = 0
++    for i, character in enumerate(text):
++        if i > 0 and text[i - 1] == "‍":
++            continue
++        total += get_character_cell_size(character)
++    return total
++
++
+ @lru_cache(4096)
+ def cached_cell_len(text: str) -> int:
+     """Get the number of cells required to display text.
+@@ -45,7 +55,7 @@ def cached_cell_len(text: str) -> int:
+     """
+     if _is_single_cell_widths(text):
+         return len(text)
+-    return sum(map(get_character_cell_size, text))
++    return _get_cell_len(text)
+ 
+ 
+ def cell_len(text: str, _cell_len: Callable[[str], int] = cached_cell_len) -> int:
+@@ -61,19 +71,11 @@ def cell_len(text: str, _cell_len: Callable[[str], int] = cached_cell_len) -> in
+         return _cell_len(text)
+     if _is_single_cell_widths(text):
+         return len(text)
+-    return sum(map(get_character_cell_size, text))
+-
+-
+-@lru_cache(maxsize=4096)
+-def get_character_cell_size(character: str) -> int:
+-    """Get the cell size of a character.
++    return _get_cell_len(text)
+ 
+-    Args:
+-        character (str): A single character.
+ 
+-    Returns:
+-        int: Number of cells (0, 1 or 2) occupied by that character.
+-    """
++def get_raw_character_cell_size(character: str) -> int:
++    """Get the raw cell size of a character."""
+     codepoint = ord(character)
+     _table = CELL_WIDTHS
+     lower_bound = 0
+@@ -86,13 +88,54 @@ def get_character_cell_size(character: str) -> int:
+         elif codepoint > end:
+             lower_bound = index + 1
+         else:
+-            return 0 if width == -1 else width
++            return width
+         if upper_bound < lower_bound:
+             break
+         index = (lower_bound + upper_bound) // 2
+     return 1
+ 
+ 
++@lru_cache(maxsize=4096)
++def get_character_cell_size(character: str) -> int:
++    """Get the cell size of a character.
++
++    Args:
++        character (str): A single character.
++
++    Returns:
++        int: Number of cells (0, 1 or 2) occupied by that character.
++    """
++    width = get_raw_character_cell_size(character)
++    return 0 if width == -1 else width
++
++
++def split_graphemes(text: str) -> list[str]:
++    """Split text into graphemes.
++
++    Args:
++        text: The text to split.
++
++    Returns:
++        A list of graphemes.
++    """
++    if not text:
++        return []
++    graphemes = []
++    current_grapheme = []
++    for i, character in enumerate(text):
++        if not current_grapheme:
++            current_grapheme.append(character)
++            continue
++        if get_raw_character_cell_size(character) == 0 or text[i - 1] == "‍":
++            current_grapheme.append(character)
++        else:
++            graphemes.append("".join(current_grapheme))
++            current_grapheme = [character]
++    if current_grapheme:
++        graphemes.append("".join(current_grapheme))
++    return graphemes
++
++
+ def set_cell_size(text: str, total: int) -> str:
+     """Set the length of a string to fit within given number of cells."""
+ 
+@@ -142,7 +185,6 @@ def chop_cells(
+         A list of strings such that each string in the list has cell width
+         less than or equal to the available width.
+     """
+-    _get_character_cell_size = get_character_cell_size
+     lines: list[list[str]] = [[]]
+ 
+     append_new_line = lines.append
+@@ -150,16 +192,16 @@ def chop_cells(
+ 
+     total_width = 0
+ 
+-    for character in text:
+-        cell_width = _get_character_cell_size(character)
++    for grapheme in split_graphemes(text):
++        cell_width = cell_len(grapheme)
+         char_doesnt_fit = total_width + cell_width > width
+ 
+-        if char_doesnt_fit:
+-            append_new_line([character])
++        if char_doesnt_fit and total_width > 0:
++            append_new_line([grapheme])
+             append_to_last_line = lines[-1].append
+             total_width = cell_width
+         else:
+-            append_to_last_line(character)
++            append_to_last_line(grapheme)
+             total_width += cell_width
+ 
+     return ["".join(line) for line in lines]

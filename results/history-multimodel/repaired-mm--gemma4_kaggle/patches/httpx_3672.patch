@@ -1,0 +1,77 @@
+diff --git a/src/httpx/_parsers.py b/src/httpx/_parsers.py
+index 830fccd..eaac4e6 100644
+--- a/src/httpx/_parsers.py
++++ b/src/httpx/_parsers.py
+@@ -375,9 +375,13 @@ class HTTPParser:
+             self.recv_state = State.DONE
+         return body
+ 
+-    def complete(self):
++    @property
++    def keep_alive(self) -> bool:
++        return self.send_keep_alive and self.recv_keep_alive
++
++    def reset(self):
+         is_fully_complete = self.send_state == State.DONE and self.recv_state == State.DONE
+-        is_keepalive = self.send_keep_alive and self.recv_keep_alive
++        is_keepalive = self.keep_alive
+ 
+         if not (is_fully_complete and is_keepalive):
+             self.close()
+@@ -390,6 +394,10 @@ class HTTPParser:
+             self.recv_state = State.RECV_METHOD_LINE
+             self.send_state = State.WAIT
+ 
++    def complete(self):
++        """Alias for reset() to maintain backward compatibility with tests."""
++        self.reset()
++
+         self.send_content_length = 0
+         self.recv_content_length = 0
+         self.send_seen_length = 0
+diff --git a/src/httpx/_pool.py b/src/httpx/_pool.py
+index 7193f8d..64f4fe0 100644
+--- a/src/httpx/_pool.py
++++ b/src/httpx/_pool.py
+@@ -237,7 +237,7 @@ class Connection(Transport):
+ 
+     # Request/response cycle complete...
+     def _complete(self) -> None:
+-        self._parser.complete()
++        self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+     def _close(self) -> None:
+diff --git a/src/httpx/_server.py b/src/httpx/_server.py
+index 95226d9..a2ded55 100644
+--- a/src/httpx/_server.py
++++ b/src/httpx/_server.py
+@@ -51,6 +51,8 @@ class HTTPConnection:
+                         self._send_body(response)
+         except Exception:
+             logger.error("Internal Server Error", exc_info=True)
++        finally:
++            self.close()
+ 
+     def close(self):
+         self._parser.close()
+@@ -89,7 +91,7 @@ class HTTPConnection:
+ 
+     # Start it all over again...
+     def _complete(self):
+-        self._parser.complete
++        self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+ 
+@@ -122,5 +124,8 @@ def serve_http(endpoint):
+ 
+ 
+ def run(app):
+-    with serve_http(app) as server:
+-        server.wait()
++    try:
++        with serve_http(app) as server:
++            server.wait()
++    except KeyboardInterrupt:
++        pass

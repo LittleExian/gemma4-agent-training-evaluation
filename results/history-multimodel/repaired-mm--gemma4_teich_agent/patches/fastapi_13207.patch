@@ -1,0 +1,112 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 3d91814c..bf6ef2a3 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -180,8 +180,8 @@ def get_schema_from_model_field(
+     ],
+     separate_input_output_schemas: bool = True,
+ ) -> Dict[str, Any]:
+-    override_mode: Union[Literal["validation"], None] = (
+-        None if separate_input_output_schemas else "validation"
++    override_mode: Union[Literal["serialization"], None] = (
++        None if separate_input_output_schemas else "serialization"
+     )
+     # This expects that GenerateJsonSchema was already used to generate the definitions
+     json_schema = field_mapping[(field, override_mode or field.mode)]
+@@ -204,8 +204,8 @@ def get_definitions(
+     Dict[str, Dict[str, Any]],
+ ]:
+     schema_generator = GenerateJsonSchema(ref_template=REF_TEMPLATE)
+-    override_mode: Union[Literal["validation"], None] = (
+-        None if separate_input_output_schemas else "validation"
++    override_mode: Union[Literal["serialization"], None] = (
++        None if separate_input_output_schemas else "serialization"
+     )
+     validation_fields = [field for field in fields if field.mode == "validation"]
+     serialization_fields = [field for field in fields if field.mode == "serialization"]
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..e069fecf
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,23 @@
++from fastapi import FastAPI
++from pydantic import BaseModel, computed_field
++
++app = FastAPI(separate_input_output_schemas=False)
++
++class Item(BaseModel):
++    name: str
++    price: float
++
++    @computed_field
++    @property
++    def total(self) -> float:
++        return self.price * 1.2
++
++@app.post("/item", response_model=Item)
++def create_item(item: Item):
++    return item
++
++if __name__ == "__main__":
++    from fastapi.testclient import TestClient
++    client = TestClient(app)
++    response = client.get("/openapi.json")
++    print(response.json())
+diff --git a/reproduction_script.py b/reproduction_script.py
+new file mode 100644
+index 00000000..8c6234ea
+--- /dev/null
++++ b/reproduction_script.py
+@@ -0,0 +1,51 @@
++from fastapi import FastAPI
++from pydantic import BaseModel, computed_field
++from typing import Dict, Any
++import json
++
++class Item(BaseModel):
++    name: str
++    price: float
++
++    @computed_field
++    @property
++    def total_price(self) -> float:
++        return self.price * 1.2
++
++app = FastAPI()
++
++@app.get("/item", response_model=Item)
++def read_item():
++    return Item(name="test", price=10.0)
++
++def check_computed_field(separate_input_output_schemas: bool) -> bool:
++    app.separate_input_output_schemas = separate_input_output_schemas
++    app.openapi_schema = None  # Reset schema to force regeneration
++    schema = app.openapi()
++    
++    schemas = schema.get("components", {}).get("schemas", {})
++    
++    for schema_name, schema_def in schemas.items():
++        properties = schema_def.get("properties", {})
++        if "total_price" in properties:
++            return True
++    return False
++
++res_true = check_computed_field(True)
++res_false = check_computed_field(False)
++
++print(f"separate_input_output_schemas=True: {'Found' if res_true else 'Not Found'}")
++print(f"separate_input_output_schemas=False: {'Found' if res_false else 'Not Found'}")
++
++if res_true and not res_false:
++    print("Reproduction successful: computed field missing when separate_input_output_schemas=False")
++    exit(1)
++elif not res_true and not res_false:
++    print("Computed field missing in both cases")
++    exit(1)
++elif res_true and res_false:
++    print("Computed field present in both cases - bug fixed!")
++    exit(0)
++else:
++    print("Unexpected result")
++    exit(1)

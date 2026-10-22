@@ -1,0 +1,208 @@
+diff --git a/check_diff.py b/check_diff.py
+new file mode 100644
+index 00000000..f25d687a
+--- /dev/null
++++ b/check_diff.py
+@@ -0,0 +1,10 @@
++from typing import List, Annotated, get_args
++from pydantic import Json
++
++t1 = Json[List[str]]
++args1 = get_args(t1)
++print(f"t1 arg 1 is Json: {args1[1] is Json}")
++
++t2 = Annotated[List[str], Json]
++args2 = get_args(t2)
++print(f"t2 arg 1 is Json: {args2[1] is Json}")
+diff --git a/check_final.py b/check_final.py
+new file mode 100644
+index 00000000..055965a8
+--- /dev/null
++++ b/check_final.py
+@@ -0,0 +1,12 @@
++from typing import List, Annotated, get_args
++from pydantic import Json
++
++def check(annotation):
++    args = get_args(annotation)
++    return any(arg is Json or isinstance(arg, Json) for arg in args[1:])
++
++t1 = Json[List[str]]
++print(f"Json[List[str]]: {check(t1)}")
++
++t2 = Annotated[List[str], Json]
++print(f"Annotated[List[str], Json]: {check(t2)}")
+diff --git a/check_json.py b/check_json.py
+new file mode 100644
+index 00000000..b1fd1a13
+--- /dev/null
++++ b/check_json.py
+@@ -0,0 +1,8 @@
++from typing import List
++from pydantic import Json
++from typing import get_origin, get_args
++
++t = Json[List[str]]
++print(f"Type: {t}")
++print(f"Origin: {get_origin(t)}")
++print(f"Args: {get_args(t)}")
+diff --git a/check_json_args.py b/check_json_args.py
+new file mode 100644
+index 00000000..9d30c64e
+--- /dev/null
++++ b/check_json_args.py
+@@ -0,0 +1,9 @@
++from typing import List, get_args
++from pydantic import Json
++t = Json[List[str]]
++args = get_args(t)
++print(f"Args: {args}")
++for arg in args:
++    print(f"Arg: {arg}, Type: {type(arg)}")
++    print(f"Is instance of Json: {isinstance(arg, Json)}")
++    print(f"Is Json: {arg is Json}")
+diff --git a/check_json_repr.py b/check_json_repr.py
+new file mode 100644
+index 00000000..da1e9886
+--- /dev/null
++++ b/check_json_repr.py
+@@ -0,0 +1,8 @@
++from typing import List, get_args
++from pydantic import Json
++t = Json[List[str]]
++args = get_args(t)
++print(f"Args: {args}")
++for arg in args:
++    print(f"Arg: {arg}, Repr: {repr(arg)}, Type: {type(arg)}")
++print(f"Json: {Json}, Repr: {repr(Json)}, Type: {type(Json)}")
+diff --git a/check_json_type.py b/check_json_type.py
+new file mode 100644
+index 00000000..6a95b5fa
+--- /dev/null
++++ b/check_json_type.py
+@@ -0,0 +1,3 @@
++from pydantic import Json
++print(f"Json type: {type(Json)}")
++print(f"Json value: {Json}")
+diff --git a/fastapi/_compat/shared.py b/fastapi/_compat/shared.py
+index 68b9bbdf..ccb7561e 100644
+--- a/fastapi/_compat/shared.py
++++ b/fastapi/_compat/shared.py
+@@ -70,6 +70,26 @@ def field_annotation_is_sequence(annotation: Union[type[Any], None]) -> bool:
+             if field_annotation_is_sequence(arg):
+                 return True
+         return False
++    if origin is Annotated:
++        args = get_args(annotation)
++        if not args:
++            return False
++        # If Json is in the metadata, it's not a sequence field for getlist()
++        # We check for 'Json' by looking at the metadata.
++        # Since we don't want to import pydantic here if possible, 
++        # we can check the name of the type or use a more generic way.
++        # But pydantic.Json is what we are looking for.
++        # Let's see if we can import it.
++        try:
++            from pydantic import Json
++            print(f"DEBUG: args[1:]: {args[1:]}")
++            for arg in args[1:]:
++                print(f"DEBUG: arg: {arg}, type: {type(arg)}, isinstance(arg, Json): {isinstance(arg, Json)}")
++            if any(isinstance(arg, Json) for arg in args[1:]):
++                return False
++        except ImportError:
++            pass
++        return field_annotation_is_sequence(args[0])
+     return _annotation_is_sequence(annotation) or _annotation_is_sequence(
+         get_origin(annotation)
+     )
+diff --git a/reproduce_fastapi.py b/reproduce_fastapi.py
+new file mode 100644
+index 00000000..b8f167b8
+--- /dev/null
++++ b/reproduce_fastapi.py
+@@ -0,0 +1,30 @@
++from fastapi import FastAPI, Form, UploadFile, File
++from fastapi.testclient import TestClient
++from typing import Annotated, List
++from pydantic import Json
++
++app = FastAPI()
++
++@app.post("/upload")
++def upload(
++    file: UploadFile = File(...),
++    tags: Annotated[Json[List[str]], Form()]
++):
++    return {"file": file.filename, "tags": tags}
++
++client = TestClient(app)
++
++def test_upload():
++    # We send tags as a JSON string in a form field
++    files = {"file": ("test.txt", b"content")}
++    data = {"tags": '["abc", "def"]'}
++    
++    response = client.post("/upload", data=data, files=files)
++    print(f"Status Code: {response.status_code}")
++    print(f"Response Body: {response.json()}")
++
++if __name__ == "__main__":
++    try:
++        test_upload()
++    except Exception as e:
++        print(f"Error: {e}")
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..7233a8c3
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,13 @@
++from typing import List, Annotated
++from pydantic import Json, Field
++from pydantic.fields import FieldInfo
++from fastapi._compat.v2 import ModelField, is_sequence_field
++from fastapi import params
++
++# Pydantic v2 FieldInfo with Annotated
++# In FastAPI, the annotation passed to ModelField is often the one from the function signature
++annotation = Annotated[Json[List[str]], params.Form()]
++field_info = FieldInfo(annotation=annotation)
++model_field = ModelField(field_info=field_info, name="items")
++
++print(f"Is Annotated[Json[List[str]], Form()] a sequence field? {is_sequence_field(model_field)}")
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..51b62c4f
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,30 @@
++from typing import List, Annotated
++from pydantic import Json
++from fastapi._compat.shared import field_annotation_is_sequence
++
++def test_json_sequence():
++    # This is the case that was failing
++    annotation = Annotated[List[str], Json]
++    result = field_annotation_is_sequence(annotation)
++    print(f"Annotated[List[str], Json] -> {result}")
++    assert result is False, "Should be False for Json[List[str]]"
++
++    # This should still be True
++    annotation_list = List[str]
++    result_list = field_annotation_is_sequence(annotation_list)
++    print(f"List[str] -> {result_list}")
++    assert result_list is True, "Should be True for List[str]"
++
++    # This should still be True
++    annotation_annotated_list = Annotated[List[str], "some metadata"]
++    result_annotated_list = field_annotation_is_sequence(annotation_annotated_list)
++    print(f"Annotated[List[str], 'some metadata'] -> {result_annotated_list}")
++    assert result_annotated_list is True, "Should be True for Annotated[List[str], ...]"
++
++if __name__ == "__main__":
++    try:
++        test_json_sequence()
++        print("All tests passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)

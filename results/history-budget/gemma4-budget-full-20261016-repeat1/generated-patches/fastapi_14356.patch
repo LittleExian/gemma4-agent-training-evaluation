@@ -1,0 +1,91 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 2b2e6c5a..aaa52092 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -791,9 +791,18 @@ def request_params_to_args(
+         processed_keys.add(alias or field.alias)
+         processed_keys.add(field.name)
+ 
+-    for key, value in received_params.items():
+-        if key not in processed_keys:
+-            params_to_process[key] = value
++    if hasattr(received_params, "getlist"):
++        for key in received_params.keys():
++            if key not in processed_keys:
++                param_values = received_params.getlist(key)
++                if len(param_values) == 1:
++                    params_to_process[key] = param_values[0]
++                else:
++                    params_to_process[key] = param_values
++    else:
++        for key, value in received_params.items():
++            if key not in processed_keys:
++                params_to_process[key] = value
+ 
+     if single_not_embedded_field:
+         field_info = first_field.field_info
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..96c178a2
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,59 @@
++from fastapi import FastAPI, Query
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++
++app = FastAPI()
++
++
++class Model(BaseModel):
++    param: str
++
++    model_config = {"extra": "allow"}
++
++
++@app.get("/")
++async def model_with_extra(data: Model = Query()):
++    return data
++
++
++def test_pass_extra_list():
++    client = TestClient(app)
++    resp = client.get(
++        "/",
++        params={
++            "param": "123",
++            "param2": ["456", "789"],  # Pass a list of values as extra parameter
++        },
++    )
++    print(f"List test response: {resp.json()}")
++    assert resp.status_code == 200
++    assert resp.json() == {
++        "param": "123",
++        "param2": ["456", "789"],
++    }
++
++def test_pass_extra_single():
++    client = TestClient(app)
++    resp = client.get(
++        "/",
++        params={
++            "param": "123",
++            "param2": "456",  # Pass a single value as extra parameter
++        },
++    )
++    print(f"Single test response: {resp.json()}")
++    assert resp.status_code == 200
++    assert resp.json() == {
++        "param": "123",
++        "param2": "456",
++    }
++
++if __name__ == "__main__":
++    try:
++        test_pass_extra_list()
++        test_pass_extra_single()
++        print("All tests passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++    except Exception as e:
++        print(f"An error occurred: {e}")

@@ -1,0 +1,91 @@
+diff --git a/fastapi/_compat.py b/fastapi/_compat.py
+index 8ea5bf25..5e6ee0f6 100644
+--- a/fastapi/_compat.py
++++ b/fastapi/_compat.py
+@@ -568,6 +568,8 @@ def field_annotation_is_sequence(annotation: Union[Type[Any], None]) -> bool:
+             if field_annotation_is_sequence(arg):
+                 return True
+         return False
++    if origin is Annotated:
++        return field_annotation_is_sequence(get_args(annotation)[0])
+     return _annotation_is_sequence(annotation) or _annotation_is_sequence(
+         get_origin(annotation)
+     )
+@@ -589,6 +591,8 @@ def field_annotation_is_complex(annotation: Union[Type[Any], None]) -> bool:
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         return any(field_annotation_is_complex(arg) for arg in get_args(annotation))
++    if origin is Annotated:
++        return field_annotation_is_complex(get_args(annotation)[0])
+ 
+     return (
+         _annotation_is_complex(annotation)
+@@ -614,6 +618,8 @@ def field_annotation_is_scalar_sequence(annotation: Union[Type[Any], None]) -> b
+             elif not field_annotation_is_scalar(arg):
+                 return False
+         return at_least_one_scalar_sequence
++    if origin is Annotated:
++        return field_annotation_is_scalar_sequence(get_args(annotation)[0])
+     return field_annotation_is_sequence(annotation) and all(
+         field_annotation_is_scalar(sub_annotation)
+         for sub_annotation in get_args(annotation)
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..23e69ee2
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,54 @@
++from typing import Any, Literal, Annotated
++from pydantic import BaseModel
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++from pydantic import Discriminator, Tag
++
++class Pie(BaseModel):
++    time_to_cook: int
++    num_ingredients: int
++
++class ApplePie(Pie):
++    fruit: Literal["apple"] = "apple"
++
++class PumpkinPie(Pie):
++    filling: Literal["pumpkin"] = "pumpkin"
++
++def get_discriminator_value(v: Any) -> str:
++    if isinstance(v, dict):
++        return v.get("fruit", v.get("filling"))
++    return getattr(v, "fruit", getattr(v, "filling", None))
++
++Dessert = Annotated[
++    Annotated[ApplePie, Tag("apple")] | Annotated[PumpkinPie, Tag("pumpkin")],
++    Discriminator(get_discriminator_value),
++]
++
++app = FastAPI()
++@app.post("/dessert")
++async def dinner(dessert: Dessert) -> dict[str, Any]:
++    return dessert.model_dump()
++
++client = TestClient(app)
++
++def test_dessert_body():
++    # This should work if it's recognized as a body field
++    response = client.post("/dessert", json={"fruit": "apple", "time_to_cook": 10, "num_ingredients": 5})
++    print(f"Response status code: {response.status_code}")
++    print(f"Response body: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"fruit": "apple", "time_to_cook": 10, "num_ingredients": 5}
++
++    response = client.post("/dessert", json={"filling": "pumpkin", "time_to_cook": 20, "num_ingredients": 3})
++    assert response.status_code == 200
++    assert response.json() == {"filling": "pumpkin", "time_to_cook": 20, "num_ingredients": 3}
++
++if __name__ == "__main__":
++    try:
++        test_dessert_body()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

@@ -1,0 +1,83 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index dc663f54..9be37c3f 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -872,20 +872,18 @@ async def _extract_form_body(
+     received_body: FormData,
+ ) -> Dict[str, Any]:
+     values = {}
+-    first_field = body_fields[0]
+-    first_field_info = first_field.field_info
+ 
+     for field in body_fields:
+         value = _get_multidict_value(field, received_body)
+         if (
+-            isinstance(first_field_info, params.File)
++            isinstance(field.field_info, params.File)
+             and is_bytes_field(field)
+             and isinstance(value, UploadFile)
+         ):
+             value = await value.read()
+         elif (
+             is_bytes_sequence_field(field)
+-            and isinstance(first_field_info, params.File)
++            and isinstance(field.field_info, params.File)
+             and value_is_sequence(value)
+         ):
+             # For types
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..10ee9ae8
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,50 @@
++from fastapi import FastAPI, File, Form, UploadFile
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.post("/file-first")
++async def file_first(file: bytes = File(), form: str = Form()):
++    return {"file": len(file), "form": form}
++
++@app.post("/form-first")
++async def form_first(form: str = Form(), file: bytes = File()):
++    return {"file": len(file), "form": form}
++
++client = TestClient(app)
++
++def test_file_first():
++    response = client.post(
++        "/file-first",
++        data={"form": "test"},
++        files={"file": ("test.txt", b"content")}
++    )
++    if response.status_code != 200:
++        print(f"test_file_first failed: status {response.status_code}, body {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"file": 7, "form": "test"}
++
++def test_form_first():
++    response = client.post(
++        "/form-first",
++        data={"form": "test"},
++        files={"file": ("test.txt", b"content")}
++    )
++    if response.status_code != 200:
++        print(f"test_form_first failed: status {response.status_code}, body {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"file": 7, "form": "test"}
++
++if __name__ == "__main__":
++    try:
++        test_file_first()
++        print("test_file_first passed")
++    except Exception as e:
++        print(f"test_file_first failed: {e}")
++
++    try:
++        test_form_first()
++        print("test_form_first passed")
++    except Exception as e:
++        print(f"test_form_first failed: {e}")

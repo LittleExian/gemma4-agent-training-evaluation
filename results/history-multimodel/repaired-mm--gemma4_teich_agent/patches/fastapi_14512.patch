@@ -1,0 +1,165 @@
+diff --git a/check_openapi.py b/check_openapi.py
+new file mode 100644
+index 00000000..2c8c42b7
+--- /dev/null
++++ b/check_openapi.py
+@@ -0,0 +1,22 @@
++from fastapi import FastAPI, Body
++from typing import Literal, Union, Annotated
++from pydantic import BaseModel, Field
++import json
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++app = FastAPI()
++
++@app.post("/pet")
++async def create_pet(pet: Annotated[Pet, Body()]):
++    return pet
++
++print(json.dumps(app.openapi(), indent=2))
+diff --git a/check_openapi_2.py b/check_openapi_2.py
+new file mode 100644
+index 00000000..f5cbe76a
+--- /dev/null
++++ b/check_openapi_2.py
+@@ -0,0 +1,26 @@
++from fastapi import FastAPI, Body
++from typing import Literal, Union, Annotated
++from pydantic import BaseModel, Field
++import json
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++app = FastAPI()
++
++@app.post("/pet1")
++async def create_pet1(pet: Pet):
++    return pet
++
++@app.post("/pet2")
++async def create_pet2(pet: Annotated[Pet, Body()]):
++    return pet
++
++print(json.dumps(app.openapi(), indent=2))
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 46a30b3e..63da38a7 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -386,6 +386,8 @@ def copy_field_info(*, field_info: FieldInfo, annotation: Any) -> FieldInfo:
+     new_field_info = copy(field_info)
+     new_field_info.metadata = merged_field_info.metadata
+     new_field_info.annotation = merged_field_info.annotation
++    if merged_field_info.discriminator is not None:
++        new_field_info.discriminator = merged_field_info.discriminator
+     return new_field_info
+ 
+ 
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..fc5aa343
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,29 @@
++from fastapi import FastAPI, Body
++from fastapi.openapi.utils import get_openapi
++from pydantic import BaseModel, Field
++from typing import Annotated, Union
++
++app = FastAPI()
++
++class Cat(BaseModel):
++    type: str = "cat"
++    meow: str = "meow"
++
++class Dog(BaseModel):
++    type: str = "dog"
++    bark: str = "bark"
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++@app.post("/pet")
++def create_pet(pet: Annotated[Pet, Body()]):
++    return pet
++
++openapi_schema = get_openapi(
++    title="FastAPI",
++    version="0.1.0",
++    routes=app.routes,
++)
++
++import json
++print(json.dumps(openapi_schema, indent=2))
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..f0cdcc57
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,51 @@
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++from typing import Literal, Union, Annotated
++from pydantic import BaseModel, Field
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++app = FastAPI()
++
++@app.post("/pet")
++async def create_pet(pet: Annotated[Pet, Body()]):
++    return pet
++
++client = TestClient(app)
++
++def test_cat():
++    response = client.post("/pet", json={"type": "cat", "meows": True})
++    assert response.status_code == 200
++    assert response.json() == {"type": "cat", "meows": True}
++
++def test_dog():
++    response = client.post("/pet", json={"type": "dog", "barks": True})
++    assert response.status_code == 200
++    assert response.json() == {"type": "dog", "barks": True}
++
++def test_invalid():
++    response = client.post("/pet", json={"type": "bird", "wings": True})
++    assert response.status_code == 422
++
++if __name__ == "__main__":
++    try:
++        test_cat()
++        print("test_cat passed")
++        test_dog()
++        print("test_dog passed")
++        test_invalid()
++        print("test_invalid passed")
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

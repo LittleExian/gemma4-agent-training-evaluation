@@ -1,0 +1,137 @@
+diff --git a/fastapi/_compat/shared.py b/fastapi/_compat/shared.py
+index cabf4822..b2ff2f02 100644
+--- a/fastapi/_compat/shared.py
++++ b/fastapi/_compat/shared.py
+@@ -83,10 +83,14 @@ def _annotation_is_sequence(annotation: Union[Type[Any], None]) -> bool:
+ def field_annotation_is_sequence(annotation: Union[Type[Any], None]) -> bool:
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
++        at_least_one_sequence = False
+         for arg in get_args(annotation):
+             if field_annotation_is_sequence(arg):
+-                return True
+-        return False
++                at_least_one_sequence = True
++                continue
++            if arg is not type(None):
++                return False
++        return at_least_one_sequence
+     return _annotation_is_sequence(annotation) or _annotation_is_sequence(
+         get_origin(annotation)
+     )
+@@ -135,7 +139,7 @@ def field_annotation_is_scalar_sequence(annotation: Union[Type[Any], None]) -> b
+             if field_annotation_is_scalar_sequence(arg):
+                 at_least_one_scalar_sequence = True
+                 continue
+-            elif not field_annotation_is_scalar(arg):
++            if arg is not type(None):
+                 return False
+         return at_least_one_scalar_sequence
+     return field_annotation_is_sequence(annotation) and all(
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..1f4cb00c
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,39 @@
++from fastapi._compat.shared import field_annotation_is_sequence, field_annotation_is_scalar_sequence, field_annotation_is_scalar
++from typing import List, Optional, Sequence, Union
++import types
++
++# Python 3.10+ union syntax
++try:
++    UnionType = types.UnionType
++except AttributeError:
++    UnionType = Union
++
++def test():
++    # Test cases
++    test_cases = [
++        (List[int], True, True),
++        (Optional[List[int]], True, True),
++        (Sequence[int], True, True),
++        (Optional[Sequence[int]], True, True),
++        (list[int], True, True),
++        (list[int] | None, True, True),
++        (Sequence[int] | None, True, True),
++        (int, False, False),
++        (Optional[int], False, False),
++        (List[List[int]], True, False),
++        (Optional[List[List[int]]], True, False),
++        (list[list[int]], True, False),
++        (list[list[int]] | None, True, False),
++    ]
++
++    for annotation, expected_seq, expected_scalar_seq in test_cases:
++        res_seq = field_annotation_is_sequence(annotation)
++        res_scalar_seq = field_annotation_is_scalar_sequence(annotation)
++        print(f"Annotation: {annotation}")
++        print(f"  is_sequence: {res_seq} (expected {expected_seq})")
++        print(f"  is_scalar_sequence: {res_scalar_seq} (expected {expected_scalar_seq})")
++        assert res_seq == expected_seq, f"Failed is_sequence for {annotation}"
++        assert res_scalar_seq == expected_scalar_seq, f"Failed is_scalar_sequence for {annotation}"
++
++if __name__ == "__main__":
++    test()
+diff --git a/reproduce_issue_v2.py b/reproduce_issue_v2.py
+new file mode 100644
+index 00000000..82ae6594
+--- /dev/null
++++ b/reproduce_issue_v2.py
+@@ -0,0 +1,22 @@
++from typing import Union, Optional, List, Tuple, Set, Deque, FrozenSet, Sequence
++from typing_extensions import Annotated
++from fastapi._compat.shared import field_annotation_is_sequence, field_annotation_is_scalar_sequence, field_annotation_is_scalar
++import types
++
++def test_type(annotation, name):
++    print(f"{name}:")
++    print(f"  is_sequence: {field_annotation_is_sequence(annotation)}")
++    print(f"  is_scalar_sequence: {field_annotation_is_scalar_sequence(annotation)}")
++    print(f"  is_scalar: {field_annotation_is_scalar(annotation)}")
++
++test_type(List[int], "List[int]")
++test_type(Optional[List[int]], "Optional[List[int]]")
++test_type(List[int] | None, "List[int] | None")
++test_type(List[int] | List[str], "List[int] | List[str]")
++test_type(List[int] | str, "List[int] | str")
++test_type(List[int] | List[int], "List[int] | List[int]")
++test_type(List[int] | None | str, "List[int] | None | str")
++test_type(List[int] | List[int] | None, "List[int] | List[int] | None")
++test_type(str | None, "str | None")
++test_type(int | None, "int | None")
++test_type(List[int] | dict, "List[int] | dict")
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..5a4f3937
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,28 @@
++from typing import Union, List, get_args, get_origin
++import types
++from fastapi._compat.shared import field_annotation_is_sequence, field_annotation_is_scalar_sequence
++
++UnionType = getattr(types, "UnionType", Union)
++
++def test():
++    # Case 1: List[int] | None -> True
++    u1 = Union[List[int], None]
++    print(f"List[int] | None: sequence={field_annotation_is_sequence(u1)}, scalar_sequence={field_annotation_is_scalar_sequence(u1)}")
++    
++    # Case 2: List[int] | str -> False
++    u2 = Union[List[int], str]
++    print(f"List[int] | str: sequence={field_annotation_is_sequence(u2)}, scalar_sequence={field_annotation_is_scalar_sequence(u2)}")
++    
++    # Case 3: List[int] | List[str] -> True
++    u3 = Union[List[int], List[str]]
++    print(f"List[int] | List[str]: sequence={field_annotation_is_sequence(u3)}, scalar_sequence={field_annotation_is_scalar_sequence(u3)}")
++    
++    # Case 4: List[int] | None | List[str] -> True
++    u4 = Union[List[int], None, List[str]]
++    print(f"List[int] | None | List[str]: sequence={field_annotation_is_sequence(u4)}, scalar_sequence={field_annotation_is_scalar_sequence(u4)}")
++
++    # Case 5: List[int] | int -> False (for sequence)
++    u5 = Union[List[int], int]
++    print(f"List[int] | int: sequence={field_annotation_is_sequence(u5)}, scalar_sequence={field_annotation_is_scalar_sequence(u5)}")
++
++test()

@@ -1,0 +1,96 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..6288a4ea
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,90 @@
++import sys
++sys.path.insert(0, 'src')
++import requests.sessions
++requests.sessions.merge_cookies = lambda *args: None
++requests.sessions.extract_cookies_to_jar = lambda *args: None
++from requests.sessions import Session
++from requests.models import Response
++from unittest.mock import MagicMock
++
++    class MockReq:
++        def __init__(self, url):
++            self.url = url
++            self.method = 'GET'
++            self._body_position = None
++            self.headers = {}
++            self._cookies = None
++        def copy(self):
++            return MockReq(self.url)
++
++    class MockResp:
++        def __init__(self, url, is_redirect=False):
++            self.url = url
++            self._is_redirect = is_redirect
++            self.history = []
++            self.headers = {}
++            self.status_code = 302 if is_redirect else 200
++            if is_redirect:
++                self.headers['location'] = 'http://next.com'
++            self.raw = None
++            self.request = None
++
++    def test_redirect_history():
++        session = Session()
++        
++        def gen_responses():
++            # 1st response: redirect
++            resp1 = MockResp('http://first.com', is_redirect=True)
++            # 2nd response: redirect
++            resp2 = MockResp('http://second.com', is_redirect=True)
++            # 3rd response: final
++            resp3 = MockResp('http://third.com', is_redirect=False)
++            
++            yield resp1
++            yield resp2
++            yield resp3
++
++        # Mock Session.send to return responses from gen_responses
++        responses = gen_responses()
++        session.send = lambda req, **kwargs: next(responses)
++
++        # Initial request
++        req = MockReq('http://first.com')
++        
++        # We need to mock the resolve_redirects loop
++        # In Session.send, resolve_redirects is called.
++        # Let's just call resolve_redirects directly to test it.
++        
++        hist = []
++        resp = session.send(req)
++        
++        # First redirect
++        hist.append(resp)
++        resp.history = hist[1:] # This is the bug: should be hist[:-1]
++        
++        # Second redirect
++        resp = session.send(req)
++        hist.append(resp)
++        resp.history = hist[1:] # This is the bug: should be hist[:-1]
++        
++        # Final response
++        resp = session.send(req)
++        hist.append(resp)
++        resp.history = hist[1:] # This is the bug: should be hist[:-1]
++        
++        # Check for self-reference
++        for i, r in enumerate(hist):
++            for h in r.history:
++                if h is r:
++                    print(f"Self-reference found in response {i}!")
++                    return False
++        
++        print("No self-reference found.")
++        return True
++
++    if __name__ == "__main__":
++        if test_redirect_history():
++            print("Test passed")
++        else:
++            print("Test failed")
++            sys.exit(1)

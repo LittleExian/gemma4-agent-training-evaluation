@@ -1,0 +1,101 @@
+diff --git a/fastapi/_compat/__init__.py b/fastapi/_compat/__init__.py
+index 3dfaf9b7..c7921fc9 100644
+--- a/fastapi/_compat/__init__.py
++++ b/fastapi/_compat/__init__.py
+@@ -4,6 +4,7 @@ from .shared import annotation_is_pydantic_v1 as annotation_is_pydantic_v1
+ from .shared import field_annotation_is_scalar as field_annotation_is_scalar
+ from .shared import is_pydantic_v1_model_class as is_pydantic_v1_model_class
+ from .shared import is_pydantic_v1_model_instance as is_pydantic_v1_model_instance
++from .shared import is_typealiastype as is_typealiastype
+ from .shared import (
+     is_uploadfile_or_nonable_uploadfile_annotation as is_uploadfile_or_nonable_uploadfile_annotation,
+ )
+diff --git a/fastapi/_compat/shared.py b/fastapi/_compat/shared.py
+index 68b9bbdf..5f80591c 100644
+--- a/fastapi/_compat/shared.py
++++ b/fastapi/_compat/shared.py
+@@ -204,3 +204,11 @@ def annotation_is_pydantic_v1(annotation: Any) -> bool:
+             if annotation_is_pydantic_v1(sub_annotation):
+                 return True
+     return False
++
++
++def is_typealiastype(annotation: Any) -> bool:
++    try:
++        from typing import TypeAliasType
++        return isinstance(annotation, TypeAliasType)
++    except ImportError:
++        return False
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 3037b233..1ada8073 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -35,6 +35,7 @@ from fastapi._compat import (
+     is_sequence_field,
+     is_uploadfile_or_nonable_uploadfile_annotation,
+     is_uploadfile_sequence_annotation,
++    is_typealiastype,
+     lenient_issubclass,
+     sequence_types,
+     serialize_sequence_value,
+@@ -238,6 +239,8 @@ def get_typed_annotation(annotation: Any, globalns: dict[str, Any]) -> Any:
+         annotation = evaluate_forwardref(annotation, globalns, globalns)
+         if annotation is type(None):
+             return None
++    if is_typealiastype(annotation):
++        return get_typed_annotation(annotation.__value__, globalns)
+     return annotation
+ 
+ 
+diff --git a/verify_typealias.py b/verify_typealias.py
+new file mode 100644
+index 00000000..6361a1e5
+--- /dev/null
++++ b/verify_typealias.py
+@@ -0,0 +1,46 @@
++import sys
++from typing import ForwardRef, Any
++from fastapi.dependencies.utils import get_typed_annotation
++from fastapi._compat.shared import is_typealiastype
++
++def test_typealias():
++    try:
++        from types import TypeAliasType
++    except ImportError:
++        print("TypeAliasType not available in this Python version. Skipping test.")
++        return
++
++    # Case 1: Simple TypeAlias
++    # type MyAlias = int
++    MyAlias = TypeAliasType("MyAlias", int)
++    assert get_typed_annotation(MyAlias, {}) == int
++    print("Case 1 passed")
++
++    # Case 2: Nested TypeAlias
++    # type InnerAlias = int
++    # type OuterAlias = InnerAlias
++    InnerAlias = TypeAliasType("InnerAlias", int)
++    OuterAlias = TypeAliasType("OuterAlias", InnerAlias)
++    assert get_typed_annotation(OuterAlias, {}) == int
++    print("Case 2 passed")
++
++    # Case 3: TypeAlias with ForwardRef
++    # type ForwardAlias = "ForwardRefType"
++    # ForwardRefType = int
++    ForwardAlias = TypeAliasType("ForwardAlias", "ForwardRefType")
++    globalns = {"ForwardRefType": int}
++    assert get_typed_annotation(ForwardAlias, globalns) == int
++    print("Case 3 passed")
++
++    # Case 4: TypeAlias with ForwardRef that resolves to another TypeAlias
++    # type InnerAlias = int
++    # type ForwardAlias = "ForwardRefType"
++    # ForwardRefType = InnerAlias
++    InnerAlias = TypeAliasType("InnerAlias", int)
++    ForwardAlias = TypeAliasType("ForwardAlias", "ForwardRefType")
++    globalns = {"ForwardRefType": InnerAlias}
++    assert get_typed_annotation(ForwardAlias, globalns) == int
++    print("Case 4 passed")
++
++if __name__ == "__main__":
++    test_typealias()

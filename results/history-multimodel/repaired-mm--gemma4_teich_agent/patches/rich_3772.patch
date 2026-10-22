@@ -1,0 +1,125 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..67dd22ae
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,11 @@
++from rich.traceback import install, Traceback
++import sys
++from unittest.mock import patch
++
++install(show_locals=True)
++
++with patch.object(Traceback, 'from_exception', side_effect=RuntimeError("Mocked failure")):
++    try:
++        1 / 0
++    except Exception:
++        sys.excepthook(*sys.exc_info())
+diff --git a/reproduce_recursion.py b/reproduce_recursion.py
+new file mode 100644
+index 00000000..7051303f
+--- /dev/null
++++ b/reproduce_recursion.py
+@@ -0,0 +1,17 @@
++from rich.traceback import install
++import sys
++
++install(show_locals=True)
++
++class BadRepr:
++    def __repr__(self):
++        raise RuntimeError("Repr failed")
++
++def foo():
++    x = BadRepr()
++    1 / 0
++
++try:
++    foo()
++except Exception:
++    sys.excepthook(*sys.exc_info())
+diff --git a/reproduce_recursion_mock.py b/reproduce_recursion_mock.py
+new file mode 100644
+index 00000000..67dd22ae
+--- /dev/null
++++ b/reproduce_recursion_mock.py
+@@ -0,0 +1,11 @@
++from rich.traceback import install, Traceback
++import sys
++from unittest.mock import patch
++
++install(show_locals=True)
++
++with patch.object(Traceback, 'from_exception', side_effect=RuntimeError("Mocked failure")):
++    try:
++        1 / 0
++    except Exception:
++        sys.excepthook(*sys.exc_info())
+diff --git a/rich/traceback.py b/rich/traceback.py
+index b2cc6304..3f0a1632 100644
+--- a/rich/traceback.py
++++ b/rich/traceback.py
+@@ -130,30 +130,44 @@ def install(
+         else locals_hide_sunder
+     )
+ 
++    _rich_traceback_guard = False
++
+     def excepthook(
+         type_: Type[BaseException],
+         value: BaseException,
+         traceback: Optional[TracebackType],
+     ) -> None:
+-        exception_traceback = Traceback.from_exception(
+-            type_,
+-            value,
+-            traceback,
+-            width=width,
+-            code_width=code_width,
+-            extra_lines=extra_lines,
+-            theme=theme,
+-            word_wrap=word_wrap,
+-            show_locals=show_locals,
+-            locals_max_length=locals_max_length,
+-            locals_max_string=locals_max_string,
+-            locals_hide_dunder=locals_hide_dunder,
+-            locals_hide_sunder=bool(locals_hide_sunder),
+-            indent_guides=indent_guides,
+-            suppress=suppress,
+-            max_frames=max_frames,
+-        )
+-        traceback_console.print(exception_traceback)
++        nonlocal _rich_traceback_guard
++        if _rich_traceback_guard:
++            try:
++                old_excepthook(type_, value, traceback)
++            except NameError:
++                pass
++            return
++
++        _rich_traceback_guard = True
++        try:
++            exception_traceback = Traceback.from_exception(
++                type_,
++                value,
++                traceback,
++                width=width,
++                code_width=code_width,
++                extra_lines=extra_lines,
++                theme=theme,
++                word_wrap=word_wrap,
++                show_locals=show_locals,
++                locals_max_length=locals_max_length,
++                locals_max_string=locals_max_string,
++                locals_hide_dunder=locals_hide_dunder,
++                locals_hide_sunder=bool(locals_hide_sunder),
++                indent_guides=indent_guides,
++                suppress=suppress,
++                max_frames=max_frames,
++            )
++            traceback_console.print(exception_traceback)
++        finally:
++            _rich_traceback_guard = False
+ 
+     def ipy_excepthook_closure(ip: Any) -> None:  # pragma: no cover
+         tb_data = {}  # store information about showtraceback call

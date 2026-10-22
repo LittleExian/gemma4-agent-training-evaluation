@@ -1,0 +1,104 @@
+diff --git a/fastapi/params.py b/fastapi/params.py
+index 68f98708..fb4023c6 100644
+--- a/fastapi/params.py
++++ b/fastapi/params.py
+@@ -497,6 +497,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+         ] = None,
+         discriminator: str | None = None,
+         strict: bool | None = _Unset,
++        strict_content_type: bool | None = _Unset,
+         multiple_of: float | None = _Unset,
+         allow_inf_nan: bool | None = _Unset,
+         max_digits: int | None = _Unset,
+@@ -517,6 +518,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+     ):
+         self.embed = embed
+         self.media_type = media_type
++        self.strict_content_type = strict_content_type
+         if example is not _Unset:
+             warnings.warn(
+                 "`example` has been deprecated, please use `examples` instead",
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 528c9629..e13169f0 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -370,6 +370,8 @@ def get_request_handler(
+                         json_body: Any = Undefined
+                         content_type_value = request.headers.get("content-type")
+                         if not content_type_value:
++                            if getattr(body_field, "strict_content_type", False):
++                                raise HTTPException(status_code=415, detail="Unsupported Media Type")
+                             json_body = await request.json()
+                         else:
+                             message = email.message.Message()
+@@ -381,6 +383,8 @@ def get_request_handler(
+                         if json_body != Undefined:
+                             body = json_body
+                         else:
++                            if getattr(body_field, "strict_content_type", False):
++                                raise HTTPException(status_code=415, detail="Unsupported Media Type")
+                             body = body_bytes
+         except json.JSONDecodeError as e:
+             validation_error = RequestValidationError(
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..fc56c2c0
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,56 @@
++import asyncio
++from fastapi import FastAPI, Body, HTTPException
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++
++app = FastAPI()
++
++class Item(BaseModel):
++    name: str
++
++@app.post("/strict")
++async def strict_endpoint(item: Item = Body(..., strict_content_type=True)):
++    return {"item": item}
++
++@app.post("/non-strict")
++async def non_strict_endpoint(item: Item = Body(..., strict_content_type=False)):
++    return {"item": item}
++
++client = TestClient(app)
++
++def test_strict_no_content_type():
++    response = client.post("/strict", content='{"name": "test"}', headers={})
++    assert response.status_code == 415
++    print("test_strict_no_content_type passed")
++
++def test_strict_wrong_content_type():
++    response = client.post("/strict", content='{"name": "test"}', headers={"content-type": "text/plain"})
++    assert response.status_code == 415
++    print("test_strict_wrong_content_type passed")
++
++def test_strict_correct_content_type():
++    response = client.post("/strict", content='{"name": "test"}', headers={"content-type": "application/json"})
++    assert response.status_code == 200
++    print("test_strict_correct_content_type passed")
++
++def test_non_strict_no_content_type():
++    response = client.post("/non-strict", content='{"name": "test"}', headers={})
++    assert response.status_code == 200
++    print("test_non_strict_no_content_type passed")
++
++def test_non_strict_wrong_content_type():
++    response = client.post("/non-strict", content='{"name": "test"}', headers={"content-type": "text/plain"})
++    assert response.status_code == 200
++    print("test_non_strict_wrong_content_type passed")
++
++if __name__ == "__main__":
++    try:
++        test_strict_no_content_type()
++        test_strict_wrong_content_type()
++        test_strict_correct_content_type()
++        test_non_strict_no_content_type()
++        test_non_strict_wrong_content_type()
++        print("All tests passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)

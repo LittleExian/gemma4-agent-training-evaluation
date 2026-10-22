@@ -1,0 +1,147 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index ef3f5641..b1357a8f 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -192,7 +192,12 @@ def get_flat_params(dependant: Dependant) -> List[ModelField]:
+ 
+ def get_typed_signature(call: Callable[..., Any]) -> inspect.Signature:
+     signature = inspect.signature(call)
+-    globalns = getattr(call, "__globals__", {})
++    
++    actual_call = call
++    while hasattr(actual_call, "__wrapped__"):
++        actual_call = actual_call.__wrapped__
++    globalns = getattr(actual_call, "__globals__", {})
++
+     typed_params = [
+         inspect.Parameter(
+             name=param.name,
+@@ -222,7 +227,10 @@ def get_typed_return_annotation(call: Callable[..., Any]) -> Any:
+     if annotation is inspect.Signature.empty:
+         return None
+ 
+-    globalns = getattr(call, "__globals__", {})
++    actual_call = call
++    while hasattr(actual_call, "__wrapped__"):
++        actual_call = actual_call.__wrapped__
++    globalns = getattr(actual_call, "__globals__", {})
+     return get_typed_annotation(annotation, globalns)
+ 
+ 
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..4f95f85c
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,96 @@
++import functools
++import inspect
++from typing import ForwardRef
++from fastapi.dependencies.utils import get_typed_signature, get_typed_return_annotation
++
++def test_repro():
++    # Define a class in a separate scope
++    def create_setup():
++        class LocalModel:
++            pass
++        
++        def original_func(a: "LocalModel") -> "LocalModel":
++            return a
++            
++        @functools.wraps(original_func)
++        def wrapper_func(a: "LocalModel") -> "LocalModel":
++            return original_func(a)
++            
++        return wrapper_func, LocalModel
++
++    wrapper, LocalModel = create_setup()
++    
++    print(f"Wrapper globals: {wrapper.__globals__}")
++    print(f"Original globals: {wrapper.__wrapped__.__globals__}")
++    
++    # The wrapper's globals are the globals of the 'create_setup' function's scope? 
++    # No, they are the globals of the module where 'create_setup' is defined.
++    # But 'LocalModel' is local to 'create_setup'.
++    # Actually, 'original_func' and 'wrapper_func' both have the same __globals__ 
++    # because they are defined in the same function.
++    
++    # To truly test this, we need them to have different __globals__.
++    # This happens when the wrapper is defined in a different module.
++
++    # Let's try this instead:
++    def original_func(a: "SomeModel") -> "SomeModel":
++        return a
++
++    @functools.wraps(original_func)
++    def wrapper_func(a: "SomeModel") -> "SomeModel":
++        return original_func(a)
++
++    # Now we inject 'SomeModel' into original_func's globals but not wrapper_func's.
++    # (This is a bit hacky but should work for reproduction)
++    class SomeModel:
++        pass
++    
++    original_func.__globals__["SomeModel"] = SomeModel
++    # Ensure wrapper_func.__globals__ does NOT have SomeModel (it might already have it if it's the same module)
++    # Since they are in the same module, they share the same __globals__.
++    
++    # Let's use a real module-like separation.
++    
++    # We can use a dummy module.
++    import types
++    mod_orig = types.ModuleType("mod_orig")
++    mod_wrap = types.ModuleType("mod_wrap")
++    
++    # Define LocalModel in mod_orig
++    class LocalModel:
++        pass
++    mod_orig.__dict__["LocalModel"] = LocalModel
++    
++    # Define original_func in mod_orig
++    def original_func(a: "LocalModel") -> "LocalModel":
++        return a
++    original_func.__globals__ = mod_orig.__dict__
++    mod_orig.__dict__["original_func"] = original_func
++    
++    # Define wrapper_func in mod_wrap
++    def wrapper_func(a: "LocalModel") -> "LocalModel":
++        return original_func(a)
++    wrapper_func.__globals__ = mod_wrap.__dict__
++    mod_wrap.__dict__["wrapper_func"] = wrapper_func
++    
++    # Wrap it
++    functools.update_wrapper(wrapper_func, original_func)
++    
++    print("Testing get_typed_signature...")
++    try:
++        sig = get_typed_signature(wrapper_func)
++        print("Success!")
++        for param in sig.parameters.values():
++            print(f"Param {param.name}: {param.annotation}")
++    except Exception as e:
++        print(f"Failure: {e}")
++        
++    print("\nTesting get_typed_return_annotation...")
++    try:
++        ret = get_typed_return_annotation(wrapper_func)
++        print(f"Success! Return: {ret}")
++    except Exception as e:
++        print(f"Failure: {e}")
++
++if __name__ == "__main__":
++    test_repro()
+diff --git a/wrapper_module.py b/wrapper_module.py
+new file mode 100644
+index 00000000..f1dda799
+--- /dev/null
++++ b/wrapper_module.py
+@@ -0,0 +1,9 @@
++
++from typing import Any
++
++def wrap_func(func):
++    import functools
++    @functools.wraps(func)
++    def wrapper(*args, **kwargs):
++        return func(*args, **kwargs)
++    return wrapper

@@ -1,0 +1,133 @@
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index 75ff2610..d56027b5 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -1,3 +1,4 @@
++import copy
+ import http.client
+ import inspect
+ import warnings
+@@ -377,7 +378,7 @@ def get_openapi_path(
+                     additional_status_code,
+                     additional_response,
+                 ) in route.responses.items():
+-                    process_response = additional_response.copy()
++                    process_response = copy.deepcopy(additional_response)
+                     process_response.pop("model", None)
+                     status_code_key = str(additional_status_code).upper()
+                     if status_code_key == "DEFAULT":
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..458350b4
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,39 @@
++from fastapi import FastAPI
++from pydantic import BaseModel
++import json
++
++class ModelA(BaseModel):
++    a: str
++
++class ModelB(BaseModel):
++    b: str
++
++app = FastAPI(
++    responses={
++        500: {
++            'model': ModelA | ModelB,
++            'content': {"application/json": {
++                'examples': {"Case A": {"value": "a"}}
++            }}
++        }
++    }
++)
++
++@app.get('/route1')
++def route1():
++    return "test"
++
++@app.get('/route2')
++def route2():
++    return "test"
++
++@app.get('/route3')
++def route3():
++    return "test"
++
++openapi_schema = app.openapi()
++responses_route1 = openapi_schema["paths"]["/route1"]["get"]["responses"]["500"]["content"]["application/json"]["schema"]["anyOf"]
++print(f"Number of refs in route1: {len(responses_route1)}")
++print(json.dumps(responses_route1, indent=2))
++
++assert len(responses_route1) == 2, f"Expected 2 refs, got {len(responses_route1)}"
+diff --git a/reproduction_script.py b/reproduction_script.py
+new file mode 100644
+index 00000000..14a49a36
+--- /dev/null
++++ b/reproduction_script.py
+@@ -0,0 +1,64 @@
++from fastapi import FastAPI
++from pydantic import BaseModel
++from typing import Union
++import json
++
++class ModelA(BaseModel):
++    a: str
++
++class ModelB(BaseModel):
++    b: str
++
++UnionModel = Union[ModelA, ModelB]
++
++class ResponseModel(BaseModel):
++    data: UnionModel
++
++app = FastAPI(
++    responses={
++        400: {
++            "content": {
++                "application/json": {
++                    "schema": ResponseModel.model_json_schema()
++                }
++            }
++        }
++    }
++)
++
++@app.get("/1")
++def route1():
++    return {"message": "1"}
++
++@app.get("/2")
++def route2():
++    return {"message": "2"}
++
++if __name__ == "__main__":
++    openapi_json = app.openapi()
++    print(json.dumps(openapi_json, indent=2))
++    
++    # Check for duplicate $ref in anyOf for the 400 response
++    for path, methods in openapi_json["paths"].items():
++        for method, operation in methods.items():
++            if "400" in operation["responses"]:
++                content = operation["responses"]["400"].get("content", {})
++                if "application/json" in content:
++                    schema = content["application/json"].get("schema", {})
++                    # The schema might be a $ref to ResponseModel
++                    if "$ref" in schema:
++                        ref_name = schema["$ref"].split("/")[-1]
++                        # Find the definition of ResponseModel
++                        def_schema = openapi_json["components"]["schemas"].get(ref_name, {})
++                        # ResponseModel has a field 'data' which is UnionModel
++                        properties = def_schema.get("properties", {})
++                        if "data" in properties:
++                            data_schema = properties["data"]
++                            if "anyOf" in data_schema:
++                                any_of = data_schema["anyOf"]
++                                refs = [item.get("$ref") for item in any_of if "$ref" in item]
++                                if len(refs) != len(set(refs)):
++                                    print(f"Duplicate refs found in {path} {method}: {refs}")
++                                    exit(1)
++    print("No duplicate refs found.")
++    exit(0)

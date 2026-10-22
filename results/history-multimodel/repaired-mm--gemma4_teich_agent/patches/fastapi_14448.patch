@@ -1,0 +1,155 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 2a4d9a01..b93aa862 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -76,36 +76,49 @@ class Dependant:
+         return False
+ 
+     @cached_property
+-    def _unwrapped_call(self) -> Any:
++    def _all_callables(self) -> List[Any]:
+         if self.call is None:
+-            return self.call  # pragma: no cover
+-        unwrapped = inspect.unwrap(self.call)
+-        if isinstance(unwrapped, partial):
+-            unwrapped = unwrapped.func
+-        return unwrapped
++            return []
++        callables = []
++        current = self.call
++        visited = set()
++        while current is not None and id(current) not in visited:
++            visited.add(id(current))
++            callables.append(current)
++            unwrapped = inspect.unwrap(current)
++            if unwrapped is not current:
++                current = unwrapped
++                continue
++            if isinstance(current, partial):
++                current = current.func
++                continue
++            dunder_call = getattr(current, "__call__", None)
++            if dunder_call is not None and dunder_call is not current:
++                current = dunder_call
++                continue
++            break
++        return callables
+ 
+     @cached_property
+     def is_gen_callable(self) -> bool:
+-        if inspect.isgeneratorfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isgeneratorfunction(dunder_call)
++        for callable_obj in self._all_callables:
++            if inspect.isgeneratorfunction(callable_obj):
++                return True
++        return False
+ 
+     @cached_property
+     def is_async_gen_callable(self) -> bool:
+-        if inspect.isasyncgenfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isasyncgenfunction(dunder_call)
++        for callable_obj in self._all_callables:
++            if inspect.isasyncgenfunction(callable_obj):
++                return True
++        return False
+ 
+     @cached_property
+     def is_coroutine_callable(self) -> bool:
+-        if inspect.isroutine(self._unwrapped_call):
+-            return iscoroutinefunction(self._unwrapped_call)
+-        if inspect.isclass(self._unwrapped_call):
+-            return False
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return iscoroutinefunction(dunder_call)
++        for callable_obj in self._all_callables:
++            if iscoroutinefunction(callable_obj):
++                return True
++        return False
+ 
+     @cached_property
+     def computed_scope(self) -> Union[str, None]:
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..43acc923
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,75 @@
++import asyncio
++import inspect
++from functools import wraps, partial
++from fastapi.dependencies.models import Dependant
++
++async def async_func():
++    return 1
++
++def sync_func():
++    return 1
++
++def async_wrapper(f):
++    @wraps(f)
++    async def wrapper(*args, **kwargs):
++        return await f(*args, **kwargs)
++    return wrapper
++
++def sync_wrapper(f):
++    @wraps(f)
++    def wrapper(*args, **kwargs):
++        return f(*args, **kwargs)
++    return wrapper
++
++def test_is_coroutine_callable():
++    # 1. Async function
++    dep = Dependant(call=async_func)
++    assert dep.is_coroutine_callable is True, "Async function should be coroutine callable"
++
++    # 2. Sync function
++    dep = Dependant(call=sync_func)
++    assert dep.is_coroutine_callable is False, "Sync function should not be coroutine callable"
++
++    # 3. Wrapped async function (sync wrapper)
++    dep = Dependant(call=sync_wrapper(async_func))
++    assert dep.is_coroutine_callable is True, "Wrapped async function should be coroutine callable"
++
++    # 4. Wrapped sync function (async wrapper)
++    dep = Dependant(call=async_wrapper(sync_func))
++    assert dep.is_coroutine_callable is True, "Async wrapper of sync function should be coroutine callable"
++
++    # 5. Partial of async function
++    dep = Dependant(call=partial(async_func))
++    assert dep.is_coroutine_callable is True, "Partial of async function should be coroutine callable"
++
++    # 6. Partial of wrapped async function
++    dep = Dependant(call=partial(sync_wrapper(async_func)))
++    assert dep.is_coroutine_callable is True, "Partial of wrapped async function should be coroutine callable"
++
++    # 7. Wrapped partial of async function
++    dep = Dependant(call=sync_wrapper(partial(async_func)))
++    assert dep.is_coroutine_callable is True, "Wrapped partial of async function should be coroutine callable"
++
++    # 8. Partial of async wrapper of sync function
++    dep = Dependant(call=partial(async_wrapper(sync_func)))
++    assert dep.is_coroutine_callable is True, "Partial of async wrapper of sync function should be coroutine callable"
++
++    # 9. Callable instance with async __call__
++    class AsyncCallable:
++        async def __call__(self):
++            return 1
++    dep = Dependant(call=AsyncCallable())
++    assert dep.is_coroutine_callable is True, "Callable instance with async __call__ should be coroutine callable"
++
++    # 10. Wrapped callable instance with async __call__
++    dep = Dependant(call=sync_wrapper(AsyncCallable()))
++    assert dep.is_coroutine_callable is True, "Wrapped callable instance with async __call__ should be coroutine callable"
++
++    # 11. Partial of callable instance with async __call__
++    dep = Dependant(call=partial(AsyncCallable()))
++    assert dep.is_coroutine_callable is True, "Partial of callable instance with async __call__ should be coroutine callable"
++
++    print("All is_coroutine_callable tests passed!")
++
++if __name__ == "__main__":
++    test_is_coroutine_callable()

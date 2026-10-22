@@ -1,0 +1,84 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 9b545e4e..aadec17d 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -83,6 +83,8 @@ class Dependant:
+             return True
+         if self.security_scopes_param_name is not None:
+             return True
++        if isinstance(self.call, SecurityBase):
++            return True
+         for sub_dep in self.dependencies:
+             if sub_dep._uses_scopes:
+                 return True
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..c5913a49
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,39 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer
++from fastapi.security.base import SecurityBase
++from fastapi.openapi.utils import get_openapi_security_definitions
++from fastapi.dependencies.utils import get_flat_dependant
++from fastapi.routing import get_dependant
++
++class MySecurity(SecurityBase):
++    scheme_name = "my_security"
++    
++    async def __call__(self, request):
++        return True
++
++my_security = MySecurity()
++
++async def parent_p_scoped(d=Depends(my_security)):
++    return d
++
++app = FastAPI()
++
++@app.get("/test_scoped", dependencies=[Security(parent_p_scoped, scopes=["scope1"]), Depends(my_security)])
++async def test_scoped():
++    return {"ok": True}
++
++route_scoped = app.routes[0]
++print(f"Route type: {type(route_scoped)}")
++
++if hasattr(route_scoped, "dependant"):
++    dependant_scoped = route_scoped.dependant
++else:
++    print("Route has no dependant attribute")
++    exit(1)
++
++flat_dependant_scoped = get_flat_dependant(dependant_scoped, skip_repeats=True)
++security_definitions_scoped, operation_security_scoped = get_openapi_security_definitions(flat_dependant_scoped)
++
++print(f"Operation security scoped: {operation_security_scoped}")
++# Expected: [{'my_security': ['scope1']}]
++# If bug exists, it might be: [{'my_security': []}]
+diff --git a/reproduction.py b/reproduction.py
+new file mode 100644
+index 00000000..dae10d46
+--- /dev/null
++++ b/reproduction.py
+@@ -0,0 +1,20 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer
++import json
++
++app = FastAPI()
++
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
++
++def shared_dependency(security=Security(oauth2_scheme)):
++    return security
++
++def scoped_dependency(security=Security(shared_dependency, scopes=["scope1"])):
++    return security
++
++@app.get("/test", dependencies=[Depends(shared_dependency), Depends(scoped_dependency)])
++def test_route():
++    return {"message": "hello"}
++
++openapi_schema = app.openapi()
++print(json.dumps(openapi_schema, indent=2))

@@ -1,0 +1,117 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 2a4d9a01..a5303f4b 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -75,37 +75,50 @@ class Dependant:
+                 return True
+         return False
+ 
+-    @cached_property
+-    def _unwrapped_call(self) -> Any:
+-        if self.call is None:
+-            return self.call  # pragma: no cover
+-        unwrapped = inspect.unwrap(self.call)
+-        if isinstance(unwrapped, partial):
+-            unwrapped = unwrapped.func
+-        return unwrapped
++    def _get_all_callables(self) -> List[Any]:
++        callables = []
++        current = self.call
++        while current is not None:
++            callables.append(current)
++            if isinstance(current, partial):
++                current = current.func
++            elif hasattr(current, "__wrapped__"):
++                current = current.__wrapped__
++            else:
++                current = None
++        return callables
+ 
+     @cached_property
+     def is_gen_callable(self) -> bool:
+-        if inspect.isgeneratorfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isgeneratorfunction(dunder_call)
++        for call in self._get_all_callables():
++            if inspect.isgeneratorfunction(call):
++                return True
++            dunder_call = getattr(call, "__call__", None)  # noqa: B004
++            if inspect.isgeneratorfunction(dunder_call):
++                return True
++        return False
+ 
+     @cached_property
+     def is_async_gen_callable(self) -> bool:
+-        if inspect.isasyncgenfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isasyncgenfunction(dunder_call)
++        for call in self._get_all_callables():
++            if inspect.isasyncgenfunction(call):
++                return True
++            dunder_call = getattr(call, "__call__", None)  # noqa: B004
++            if inspect.isasyncgenfunction(dunder_call):
++                return True
++        return False
+ 
+     @cached_property
+     def is_coroutine_callable(self) -> bool:
+-        if inspect.isroutine(self._unwrapped_call):
+-            return iscoroutinefunction(self._unwrapped_call)
+-        if inspect.isclass(self._unwrapped_call):
+-            return False
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return iscoroutinefunction(dunder_call)
++        for call in self._get_all_callables():
++            if inspect.isroutine(call):
++                if iscoroutinefunction(call):
++                    return True
++            if not inspect.isclass(call):
++                dunder_call = getattr(call, "__call__", None)  # noqa: B004
++                if iscoroutinefunction(dunder_call):
++                    return True
++        return False
+ 
+     @cached_property
+     def computed_scope(self) -> Union[str, None]:
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..2e4f1409
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,34 @@
++from functools import wraps
++import asyncio
++from fastapi import Depends, FastAPI
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++def sync_gen():
++    yield 1
++    yield 2
++
++def async_gen_wrapper(func):
++    @wraps(func)
++    async def wrapper(*args, **kwargs):
++        for item in func(*args, **kwargs):
++            yield item
++    return wrapper
++
++wrapped_sync_gen = async_gen_wrapper(sync_gen)
++
++@app.get("/")
++async def root(value = Depends(wrapped_sync_gen)):
++    return value
++
++client = TestClient(app)
++
++def test_async_gen_wrapper_sync_gen():
++    response = client.get("/")
++    print(f"Response: {response.status_code}, {response.text}")
++    assert response.status_code == 200
++    assert response.json() == 1
++
++if __name__ == "__main__":
++    test_async_gen_wrapper_sync_gen()

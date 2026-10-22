@@ -1,0 +1,190 @@
+diff --git a/repro_graphemes.py b/repro_graphemes.py
+new file mode 100644
+index 00000000..1ebe917f
+--- /dev/null
++++ b/repro_graphemes.py
+@@ -0,0 +1,23 @@
++import sys
++from rich.cells import set_cell_size
++
++def test_graphemes():
++    # Family emoji: 👨‍👩‍👧‍👦 (Man + ZWJ + Woman + ZWJ + Girl + ZWJ + Boy)
++    # This is 7 codepoints but 1 grapheme cluster.
++    # Width is 2.
++    text = "👨‍👩‍👧‍👦"
++    print(f"Text: {text}")
++    print(f"Len (codepoints): {len(text)}")
++    
++    # Test set_cell_size
++    # If we set size to 1, it should not split the grapheme.
++    # Since the grapheme width is 2, it should be truncated to 0.
++    res_1 = set_cell_size(text, 1)
++    print(f"set_cell_size(text, 1): '{res_1}' (len: {len(res_1)})")
++    
++    # If we set size to 2, it should keep the whole grapheme.
++    res_2 = set_cell_size(text, 2)
++    print(f"set_cell_size(text, 2): '{res_2}' (len: {len(res_2)})")
++
++if __name__ == "__main__":
++    test_graphemes()
+diff --git a/repro_graphemes.py` b/repro_graphemes.py`
+new file mode 100644
+index 00000000..0563be1b
+--- /dev/null
++++ b/repro_graphemes.py`
+@@ -0,0 +1,53 @@
++from rich.cells import cell_len, set_cell_size, chop_cells, split_graphemes
++
++def test_graphemes():
++    # Family emoji: 👨‍👩‍👧‍👦
++    family = "👨‍👩‍👧‍👦"
++    print(f"Family emoji: {family}")
++    print(f"Codepoints length: {len(family)}")
++    print(f"Cell length: {cell_len(family)}")
++    
++    # Split graphemes
++    g = split_graphemes(family)
++    print(f"Split graphemes: {g}")
++    assert len(g) == 1, f"Expected 1 grapheme, got {len(g)}"
++
++    # Test set_cell_size
++    # The family emoji is usually 2 cells wide in many terminals, 
++    # but let's see what cell_len says.
++    width = cell_len(family)
++    print(f"Cell width: {width}")
++    
++    # Should not split the family emoji if we ask for its width
++    assert set_cell_size(family, width) == family
++    
++    # Should not split the family emoji if we ask for width-1 (should replace with space or crop)
++    # If width is 2, and we ask for 1, it should probably be " " or something that doesn't split the emoji.
++    res = set_cell_size(family, width - 1)
++    print(f"set_cell_size(family, {width-1}): {res}")
++    # It should NOT contain a partial family emoji.
++    # A partial family emoji would contain some of the codepoints.
++    assert family not in res # it's too long
++    # Check that it doesn't end with a ZWJ or start with one if it's a partial
++    # Actually, the simplest check is that it doesn't contain any part of the family emoji 
++    # that isn't a full grapheme.
++    
++    # Test chop_cells
++    # If width is less than family width, it should be on its own line (or chopped if width is very small)
++    # But chop_cells is used for folding.
++    chopped = chop_cells(family, width - 1)
++    print(f"chop_cells(family, {width-1}): {chopped}")
++    # It should not split the family emoji into multiple lines.
++    # If it doesn't fit, it should be on one line (even if it exceeds width) 
++    # OR it should be handled as a single unit.
++    # Looking at chop_cells implementation:
++    # if char_doesnt_fit:
++    #     append_new_line([grapheme])
++    #     total_width = cell_width
++    # So it will put the whole grapheme on a new line.
++    assert len(chopped) == 1
++    assert chopped[0] == family
++
++if __name__ == "__main__":
++    test_graphemes()
++    print("All tests passed!")
+diff --git a/rich/cells.py b/rich/cells.py
+index a8546227..47875c56 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -3,6 +3,8 @@ from __future__ import annotations
+ from functools import lru_cache
+ from typing import Callable
+ 
++import unicodedata
++
+ from ._cell_widths import CELL_WIDTHS
+ 
+ # Ranges of unicode ordinals that produce a 1-cell wide character
+@@ -30,6 +32,37 @@ _SINGLE_CELLS = frozenset(
+ _is_single_cell_widths: Callable[[str], bool] = _SINGLE_CELLS.issuperset
+ 
+ 
++def split_graphemes(text: str) -> list[str]:
++    """Split text into a list of grapheme clusters."""
++    if not text:
++        return []
++
++    graphemes = []
++    current_grapheme = ""
++    next_char_is_continuation = False
++
++    for char in text:
++        is_continuation = (
++            unicodedata.category(char).startswith("M")
++            or char == "\u200D"
++            or "\U0001F3FB" <= char <= "\U0001F3FF"
++        )
++
++        if next_char_is_continuation or is_continuation:
++            current_grapheme += char
++            next_char_is_continuation = char == "‍"
++        else:
++            if current_grapheme:
++                graphemes.append(current_grapheme)
++            current_grapheme = char
++            next_char_is_continuation = False
++
++    if current_grapheme:
++        graphemes.append(current_grapheme)
++
++    return graphemes
++
++
+ @lru_cache(4096)
+ def cached_cell_len(text: str) -> int:
+     """Get the number of cells required to display text.
+@@ -110,16 +143,17 @@ def set_cell_size(text: str, total: int) -> str:
+     if cell_size < total:
+         return text + " " * (total - cell_size)
+ 
++    graphemes = split_graphemes(text)
+     start = 0
+-    end = len(text)
++    end = len(graphemes)
+ 
+     # Binary search until we find the right size
+     while True:
+         pos = (start + end) // 2
+-        before = text[: pos + 1]
++        before = "".join(graphemes[: pos + 1])
+         before_len = cell_len(before)
+-        if before_len == total + 1 and cell_len(before[-1]) == 2:
+-            return before[:-1] + " "
++        if before_len == total + 1 and cell_len(graphemes[pos]) == 2:
++            return "".join(graphemes[:pos]) + " "
+         if before_len == total:
+             return before
+         if before_len > total:
+@@ -142,7 +176,6 @@ def chop_cells(
+         A list of strings such that each string in the list has cell width
+         less than or equal to the available width.
+     """
+-    _get_character_cell_size = get_character_cell_size
+     lines: list[list[str]] = [[]]
+ 
+     append_new_line = lines.append
+@@ -150,16 +183,16 @@ def chop_cells(
+ 
+     total_width = 0
+ 
+-    for character in text:
+-        cell_width = _get_character_cell_size(character)
++    for grapheme in split_graphemes(text):
++        cell_width = cell_len(grapheme)
+         char_doesnt_fit = total_width + cell_width > width
+ 
+         if char_doesnt_fit:
+-            append_new_line([character])
++            append_new_line([grapheme])
+             append_to_last_line = lines[-1].append
+             total_width = cell_width
+         else:
+-            append_to_last_line(character)
++            append_to_last_line(grapheme)
+             total_width += cell_width
+ 
+     return ["".join(line) for line in lines]

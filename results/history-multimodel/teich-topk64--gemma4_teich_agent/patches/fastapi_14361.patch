@@ -1,0 +1,131 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 5cd49343..be0cbaba 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -259,6 +259,8 @@ def _replace_refs(
+     schema: Dict[str, Any],
+     old_name_to_new_name_map: Dict[str, str],
+ ) -> Dict[str, Any]:
++    if not isinstance(schema, dict):
++        return schema
+     new_schema = deepcopy(schema)
+     for key, value in new_schema.items():
+         if key == "$ref":
+@@ -306,6 +308,8 @@ def _remap_definitions_and_field_mappings(
+         model = field_key[0].type_
+         if model not in model_name_map:
+             continue
++        if "$ref" not in schema:
++            continue
+         new_name = model_name_map[model]
+         old_name = schema["$ref"].split("/")[-1]
+         if old_name in {f"{new_name}-Input", f"{new_name}-Output"}:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..fce936f3
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,47 @@
++from fastapi._compat.v2 import _remap_definitions_and_field_mappings, ModelField
++from pydantic.fields import FieldInfo
++from typing import Any, Dict, Tuple, Literal
++from pydantic import BaseModel
++
++class MyModel(BaseModel):
++    x: int
++
++# Mock ModelField
++class MockModelField:
++    def __init__(self, type_, name):
++        self.type_ = type_
++        self.name = name
++        self.mode = "validation"
++
++# We need to match the signature of ModelField if it's used for type checking, 
++# but _remap_definitions_and_field_mappings uses field_key[0].type_
++
++# Let's use the real ModelField if possible, but it requires FieldInfo
++# ModelField is a dataclass in fastapi/_compat/v2.py
++
++# Let's just use a dummy object that has .type_
++class DummyField:
++    def __init__(self, type_):
++        self.type_ = type_
++
++# Mock field_mapping
++# field_mapping: Dict[Tuple[ModelField, Literal["validation", "serialization"]], JsonSchemaValue]
++field_mapping = {
++    (DummyField(MyModel), "validation"): {"type": "object", "properties": {}}, # No $ref
++}
++
++model_name_map = {
++    MyModel: "MyModelNewName"
++}
++
++try:
++    _remap_definitions_and_field_mappings(
++        model_name_map=model_name_map,
++        definitions={},
++        field_mapping=field_mapping,
++    )
++    print("Success")
++except KeyError as e:
++    print(f"Caught expected KeyError: {e}")
++except Exception as e:
++    print(f"Caught unexpected exception: {type(e).__name__}: {e}")
+diff --git a/repro_replace_refs.py b/repro_replace_refs.py
+new file mode 100644
+index 00000000..1f86d995
+--- /dev/null
++++ b/repro_replace_refs.py
+@@ -0,0 +1,13 @@
++from fastapi._compat.v2 import _replace_refs
++from typing import Dict, Any
++
++try:
++    _replace_refs(
++        schema="not a dict",
++        old_name_to_new_name_map={},
++    )
++    print("Success")
++except AttributeError as e:
++    print(f"Caught expected AttributeError: {e}")
++except Exception as e:
++    print(f"Caught unexpected exception: {type(e).__name__}: {e}")
+diff --git a/repro_type_error.py b/repro_type_error.py
+new file mode 100644
+index 00000000..2ea29d6c
+--- /dev/null
++++ b/repro_type_error.py
+@@ -0,0 +1,31 @@
++from fastapi._compat.v2 import _remap_definitions_and_field_mappings, ModelField
++from pydantic.fields import FieldInfo
++from typing import Any, Dict, Tuple, Literal
++from pydantic import BaseModel
++
++class MyModel(BaseModel):
++    x: int
++
++class DummyField:
++    def __init__(self, type_):
++        self.type_ = type_
++
++field_mapping = {
++    (DummyField(MyModel), "validation"): "not a dict", # Not a dict
++}
++
++model_name_map = {
++    MyModel: "MyModelNewName"
++}
++
++try:
++    _remap_definitions_and_field_mappings(
++        model_name_map=model_name_map,
++        definitions={},
++        field_mapping=field_mapping,
++    )
++    print("Success")
++except TypeError as e:
++    print(f"Caught expected TypeError: {e}")
++except Exception as e:
++    print(f"Caught unexpected exception: {type(e).__name__}: {e}")

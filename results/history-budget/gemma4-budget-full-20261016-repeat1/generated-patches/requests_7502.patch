@@ -1,0 +1,76 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..3767ba6c
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,31 @@
++
++import requests
++from requests.models import Request
++
++class FileWrapper:
++    def __getattr__(self, name):
++        if name == 'read':
++            return lambda length=None: b'file content'
++        raise AttributeError(name)
++
++def test_getattr_wrapper():
++    files = {'file': FileWrapper()}
++    # We can use requests.post or just Request.prepare
++    # But _encode_files is called during preparation of a Request with files.
++    # Let's use requests.post with a mock server or just check the prepared request.
++    
++    # Using a simple Request object and preparing it.
++    req = requests.Request('POST', 'http://httpbin.org/post', files=files)
++    prepared = req.prepare()
++    
++    print(f"Body: {prepared.body}")
++    assert b'file content' in prepared.body
++
++if __name__ == "__main__":
++    try:
++        test_getattr_wrapper()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
+diff --git a/src/requests/models.py b/src/requests/models.py
+index c4cc028e..26657842 100644
+--- a/src/requests/models.py
++++ b/src/requests/models.py
+@@ -36,7 +36,6 @@ from urllib3.filepost import encode_multipart_formdata
+ from urllib3.util import parse_url
+ 
+ from ._internal_utils import to_native_string, unicode_is_ascii
+-from ._types import SupportsRead as _SupportsRead
+ from .auth import HTTPBasicAuth
+ from .compat import (
+     JSONDecodeError,
+@@ -161,7 +160,7 @@ class RequestEncodingMixin:
+ 
+         if isinstance(data, (str, bytes)):
+             return data
+-        elif isinstance(data, _SupportsRead):
++        elif hasattr(data, "read"):
+             return data
+         elif hasattr(data, "__iter__"):
+             result: list[tuple[bytes, bytes]] = []
+@@ -236,7 +235,7 @@ class RequestEncodingMixin:
+ 
+             if isinstance(fp, (str, bytes, bytearray)):
+                 fdata = fp
+-            elif isinstance(fp, _SupportsRead):  # defensive check for untyped callers
++            elif hasattr(fp, "read"):  # defensive check for untyped callers
+                 fdata = fp.read()
+             elif fp is None:  # defensive check for untyped callers
+                 continue
+@@ -639,7 +638,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+             else:
+                 if raw_data:
+                     body = self._encode_params(raw_data)
+-                    if isinstance(data, basestring) or isinstance(data, _SupportsRead):
++                    if isinstance(data, basestring) or hasattr(data, "read"):
+                         content_type = None
+                     else:
+                         content_type = "application/x-www-form-urlencoded"

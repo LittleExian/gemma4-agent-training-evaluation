@@ -1,0 +1,104 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 46a30b3e..2e2eecb6 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -386,6 +386,7 @@ def copy_field_info(*, field_info: FieldInfo, annotation: Any) -> FieldInfo:
+     new_field_info = copy(field_info)
+     new_field_info.metadata = merged_field_info.metadata
+     new_field_info.annotation = merged_field_info.annotation
++    new_field_info.discriminator = merged_field_info.discriminator
+     return new_field_info
+ 
+ 
+diff --git a/repro_fix.py b/repro_fix.py
+new file mode 100644
+index 00000000..d063ba8f
+--- /dev/null
++++ b/repro_fix.py
+@@ -0,0 +1,33 @@
++from typing import Union, Annotated
++from pydantic import BaseModel, Field
++from pydantic.fields import FieldInfo
++from fastapi._compat.v2 import copy_field_info
++from fastapi.params import Body
++
++class Cat(BaseModel):
++    type: str = "cat"
++    meow: str
++
++class Dog(BaseModel):
++    type: str = "dog"
++    bark: str
++
++# Nested Annotated: [Union, Field(discriminator)], Body()
++T = Annotated[Annotated[Union[Cat, Dog], Field(discriminator='type')], Body()]
++
++# Simulate analyze_param:
++# fastapi_annotation = Body()
++# use_annotation = T
++fastapi_annotation = Body()
++print(f"Type of fastapi_annotation: {type(fastapi_annotation)}")
++
++# We need to see what merged_field_info is
++cls = type(fastapi_annotation)
++merged_field_info = cls.from_annotation(T)
++print(f"Type of merged_field_info: {type(merged_field_info)}")
++print(f"Merged Field Info Discriminator: {merged_field_info.discriminator}")
++
++field_info = copy_field_info(field_info=fastapi_annotation, annotation=T)
++print(f"Field Info Discriminator: {field_info.discriminator}")
++assert field_info.discriminator == 'type'
++print("Success!")
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..d20e66cf
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,47 @@
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++from typing import Literal, Union, Annotated
++from pydantic import BaseModel, Field
++
++app = FastAPI()
++
++class Cat(BaseModel):
++    type: Literal['cat']
++    meow: bool
++
++class Dog(BaseModel):
++    type: Literal['dog']
++    bark: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator='type')]
++
++@app.post("/pets")
++async def create_pet(pet: Annotated[Pet, Body()]):
++    return pet
++
++client = TestClient(app)
++
++def test_tagged_union_body():
++    # Test Cat
++    response = client.post("/pets", json={"type": "cat", "meow": True})
++    assert response.status_code == 200
++    assert response.json() == {"type": "cat", "meow": True}
++
++    # Test Dog
++    response = client.post("/pets", json={"type": "dog", "bark": True})
++    assert response.status_code == 200
++    assert response.json() == {"type": "dog", "bark": True}
++
++    # Test Invalid
++    response = client.post("/pets", json={"type": "bird", "fly": True})
++    assert response.status_code == 422
++
++if __name__ == "__main__":
++    try:
++        test_tagged_union_body()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

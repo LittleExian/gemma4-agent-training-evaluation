@@ -1,0 +1,121 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 20cb2c88..5eb9d389 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -785,11 +785,11 @@ def request_params_to_args(
+                     if field.alias != field.name
+                     else field.name.replace("_", "-")
+                 )
++        extraction_key = alias or field.alias
+         value = _get_multidict_value(field, received_params, alias=alias)
+         if value is not None:
+-            params_to_process[field.name] = value
+-        processed_keys.add(alias or field.alias)
+-        processed_keys.add(field.name)
++            params_to_process[extraction_key] = value
++        processed_keys.add(extraction_key)
+ 
+     for key in received_params.keys():
+         if key not in processed_keys:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..c67b3e2e
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,96 @@
++
++from fastapi import FastAPI, Query, Header, Cookie
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field
++
++app = FastAPI()
++
++class QueryModel(BaseModel):
++    foo: str = Field(..., alias="foo_alias")
++
++@app.get("/query")
++async def read_query(q: QueryModel = Query()):
++    print(f"Type of q: {type(q)}, value of q: {q}")
++    return q.model_dump()
++
++class HeaderModel(BaseModel):
++    foo: str = Field(..., alias="foo_alias")
++
++@app.get("/header")
++async def read_header(h: HeaderModel = Header()):
++    return h.model_dump()
++
++class CookieModel(BaseModel):
++    foo: str = Field(..., alias="foo_alias")
++
++@app.get("/cookie")
++async def read_cookie(c: CookieModel = Cookie()):
++    return c.model_dump()
++
++client = TestClient(app)
++
++def test_query_alias():
++    # Test 1: Value extracted by alias, should be put into values with alias key
++    response = client.get("/query", params={"foo_alias": "bar"})
++    print(f"Response body: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++    # Test 2: Value passed by name, should result in validation error and input should contain the name
++    response = client.get("/query", params={"foo": "bar"})
++    assert response.status_code == 422
++    errors = response.json()["detail"]
++    # The error should be that foo_alias is missing, and the input should contain foo
++    # Depending on Pydantic version, the structure might vary.
++    print(f"Query error: {errors}")
++    # We expect foo to be in the input of the error if it's an extra parameter
++    # Or at least that it's not ignored.
++
++def test_header_alias():
++    # Test 1: Value extracted by alias
++    response = client.get("/header", headers={"foo_alias": "bar"})
++    print(f"Response body: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++    # Test 2: Value passed by name
++    response = client.get("/header", headers={"foo": "bar"})
++    assert response.status_code == 422
++    print(f"Header error: {response.json()['detail']}")
++
++def test_cookie_alias():
++    # Test 1: Value extracted by alias
++    response = client.get("/cookie", cookies={"foo_alias": "bar"})
++    print(f"Response body: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++    # Test 2: Value passed by name
++    response = client.get("/cookie", cookies={"foo": "bar"})
++    assert response.status_code == 422
++    print(f"Cookie error: {response.json()['detail']}")
++
++if __name__ == "__main__":
++    try:
++        test_query_alias()
++        print("Query alias tests passed")
++    except Exception as e:
++        import traceback
++        traceback.print_exc()
++        print(f"Query alias tests failed: {e}")
++
++    try:
++        test_header_alias()
++        print("Header alias tests passed")
++    except Exception as e:
++        import traceback
++        traceback.print_exc()
++        print(f"Header alias tests failed: {e}")
++
++    try:
++        test_cookie_alias()
++        print("Cookie alias tests passed")
++    except Exception as e:
++        import traceback
++        traceback.print_exc()
++        print(f"Cookie alias tests failed: {e}")

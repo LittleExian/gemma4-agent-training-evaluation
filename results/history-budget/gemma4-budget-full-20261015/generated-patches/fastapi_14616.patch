@@ -1,0 +1,67 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index e5ac51d5..73f97d49 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -51,7 +51,7 @@ from fastapi.logger import logger
+ from fastapi.security.oauth2 import SecurityScopes
+ from fastapi.types import DependencyCacheKey
+ from fastapi.utils import create_model_field, get_path_param_names
+-from pydantic import BaseModel
++from pydantic import BaseModel, Json
+ from pydantic.fields import FieldInfo
+ from starlette.background import BackgroundTasks as StarletteBackgroundTasks
+ from starlette.concurrency import run_in_threadpool
+@@ -730,7 +730,14 @@ def _get_multidict_value(
+     field: ModelField, values: Mapping[str, Any], alias: Union[str, None] = None
+ ) -> Any:
+     alias = alias or get_validation_alias(field)
+-    if is_sequence_field(field) and isinstance(values, (ImmutableMultiDict, Headers)):
++    if (
++        is_sequence_field(field)
++        and isinstance(values, (ImmutableMultiDict, Headers))
++        and not (getattr(field.field_info, "metadata", None) and Json in field.field_info.metadata)
++    ):
++        print(f"DEBUG: field.field_info.metadata: {getattr(field.field_info, 'metadata', None)}")
++        print(f"DEBUG: Json: {Json}")
++        print(f"DEBUG: Json in metadata: {Json in getattr(field.field_info, 'metadata', [])}")
+         value = values.getlist(alias)
+     else:
+         value = values.get(alias, None)
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..7e9db7bc
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,32 @@
++from fastapi import FastAPI, Form
++from fastapi.testclient import TestClient
++from pydantic import Json
++from typing import Annotated, List
++import pytest
++
++app = FastAPI()
++
++@app.post("/upload")
++def upload(
++    tags: Annotated[Json[List[str]], Form()]
++):
++    return {"tags": tags}
++
++client = TestClient(app)
++
++def test_json_list_form():
++    # Client sends JSON string in form field
++    print(f"Json type: {type(Json)}")
++    response = client.post("/upload", data={"tags": '["abc", "def"]'})
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"tags": ["abc", "def"]}
++
++if __name__ == "__main__":
++    try:
++        test_json_list_form()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()

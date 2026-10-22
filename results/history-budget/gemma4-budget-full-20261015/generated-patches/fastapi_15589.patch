@@ -1,0 +1,82 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 7c6558c69..aec6209b6 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -830,6 +830,8 @@ def request_params_to_args(
+     for key in received_params.keys():
+         if key not in processed_keys:
+             if isinstance(received_params, (ImmutableMultiDict, Headers)):
++                if isinstance(received_params, Headers) and default_convert_underscores and "_" in key:
++                    continue
+                 value = received_params.getlist(key)
+                 if isinstance(value, list) and (len(value) == 1):
+                     params_to_process[key] = value[0]
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 000000000..3dcbe9064
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,26 @@
++from fastapi import FastAPI, Header
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++
++app = FastAPI()
++
++class CommonHeaders(BaseModel):
++    my_header: str
++
++@app.get("/")
++async def read_header(headers: CommonHeaders = Header()):
++    return {"my_header": headers.my_header}
++
++client = TestClient(app)
++
++def test_underscore_header():
++    # Default convert_underscores=True
++    # Should only accept 'my-header', not 'my_header'
++    response = client.get("/", headers={"my_header": "value"})
++    print(f"Response with my_header: {response.json()}")
++    
++    response = client.get("/", headers={"my-header": "value"})
++    print(f"Response with my-header: {response.json()}")
++
++if __name__ == "__main__":
++    test_underscore_header()
+diff --git a/repro_disabled.py b/repro_disabled.py
+new file mode 100644
+index 000000000..4b138506f
+--- /dev/null
++++ b/repro_disabled.py
+@@ -0,0 +1,31 @@
++from fastapi import FastAPI, Header, Depends
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++
++app = FastAPI()
++
++class MyHeaders(BaseModel):
++    my_header: str = Header(convert_underscores=False)
++
++@app.get("/headers")
++async def read_header(headers: MyHeaders = Depends()):
++    return {"my_header": headers.my_header}
++
++client = TestClient(app)
++
++def test_underscore_allowed():
++    response = client.get("/headers", headers={"my_header": "value"})
++    print(f"Response with my_header: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"my_header": "value"}
++
++def test_hyphen_rejected():
++    response = client.get("/headers", headers={"my-header": "value"})
++    print(f"Response with my-header: {response.json()}")
++    # Should be 422 because we explicitly set convert_underscores=False
++    assert response.status_code == 422
++
++if __name__ == "__main__":
++    test_underscore_allowed()
++    test_hyphen_rejected()
++    print("All tests passed!")

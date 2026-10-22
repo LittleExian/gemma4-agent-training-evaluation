@@ -1,0 +1,81 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 91348c8e..ff472751 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -9,6 +9,7 @@ from typing import (
+     Coroutine,
+     Dict,
+     ForwardRef,
++    get_type_hints,
+     List,
+     Mapping,
+     Optional,
+@@ -194,12 +195,18 @@ def get_typed_signature(call: Callable[..., Any]) -> inspect.Signature:
+     signature = inspect.signature(call)
+     unwrapped = inspect.unwrap(call)
+     globalns = getattr(unwrapped, "__globals__", {})
++
++    try:
++        type_hints = get_type_hints(call)
++    except Exception:
++        type_hints = {}
++
+     typed_params = [
+         inspect.Parameter(
+             name=param.name,
+             kind=param.kind,
+             default=param.default,
+-            annotation=get_typed_annotation(param.annotation, globalns),
++            annotation=type_hints.get(param.name, get_typed_annotation(param.annotation, globalns)),
+         )
+         for param in signature.parameters.values()
+     ]
+@@ -225,6 +232,14 @@ def get_typed_return_annotation(call: Callable[..., Any]) -> Any:
+         return None
+ 
+     globalns = getattr(unwrapped, "__globals__", {})
++
++    try:
++        type_hints = get_type_hints(call)
++        if "return" in type_hints:
++            return type_hints["return"]
++    except Exception:
++        pass
++
+     return get_typed_annotation(annotation, globalns)
+ 
+ 
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..975c566b
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,28 @@
++from __future__ import annotations
++from fastapi import FastAPI, Depends
++from typing import Annotated
++import inspect
++from fastapi.dependencies.utils import get_typed_signature
++from pydantic import BaseModel
++
++app = FastAPI()
++
++def get_my_model(value: str) -> MyModel:
++    return MyModel(value=value)
++
++class MyModel(BaseModel):
++    value: str
++
++@app.get("/")
++def read_root(model: Annotated[MyModel, Depends(get_my_model)]):
++    return {"value": model.value}
++
++if __name__ == "__main__":
++    sig = get_typed_signature(get_my_model)
++    print(f"Signature: {sig}")
++    for param in sig.parameters.values():
++        print(f"Param {param.name}: {param.annotation}")
++    
++    from fastapi.dependencies.utils import get_typed_return_annotation
++    ret_ann = get_typed_return_annotation(get_my_model)
++    print(f"Return annotation: {ret_ann}")

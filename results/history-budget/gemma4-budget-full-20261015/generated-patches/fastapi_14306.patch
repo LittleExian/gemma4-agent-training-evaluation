@@ -1,0 +1,95 @@
+diff --git a/fastapi/exceptions.py b/fastapi/exceptions.py
+index 0620428b..2821625a 100644
+--- a/fastapi/exceptions.py
++++ b/fastapi/exceptions.py
+@@ -155,16 +155,26 @@ class DependencyScopeError(FastAPIError):
+ 
+ 
+ class ValidationException(Exception):
+-    def __init__(self, errors: Sequence[Any]) -> None:
++    def __init__(self, errors: Sequence[Any], context: Optional[Dict[str, Any]] = None) -> None:
+         self._errors = errors
++        self.context = context
+ 
+     def errors(self) -> Sequence[Any]:
+         return self._errors
+ 
++    def __str__(self) -> str:
++        message = f"{len(self._errors)} validation errors:\\n"
++        for err in self._errors:
++            message += f"  {err}\\n"
++        if self.context:
++            message += f"\\n  File \"{self.context['file']}\", line {self.context['line']}, in {self.context['name']}\\n"
++            message += f"    {self.context['method']} {self.context['path']}\\n"
++        return message
++
+ 
+ class RequestValidationError(ValidationException):
+-    def __init__(self, errors: Sequence[Any], *, body: Any = None) -> None:
+-        super().__init__(errors)
++    def __init__(self, errors: Sequence[Any], *, body: Any = None, context: Optional[Dict[str, Any]] = None) -> None:
++        super().__init__(errors, context=context)
+         self.body = body
+ 
+ 
+@@ -173,12 +183,6 @@ class WebSocketRequestValidationError(ValidationException):
+ 
+ 
+ class ResponseValidationError(ValidationException):
+-    def __init__(self, errors: Sequence[Any], *, body: Any = None) -> None:
+-        super().__init__(errors)
++    def __init__(self, errors: Sequence[Any], *, body: Any = None, context: Optional[Dict[str, Any]] = None) -> None:
++        super().__init__(errors, context=context)
+         self.body = body
+-
+-    def __str__(self) -> str:
+-        message = f"{len(self._errors)} validation errors:\n"
+-        for err in self._errors:
+-            message += f"  {err}\n"
+-        return message
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index c10175b1..b8b64151 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -51,6 +51,41 @@ from fastapi.exceptions import (
+     ResponseValidationError,
+     WebSocketRequestValidationError,
+ )
++
++_endpoint_context_cache: Dict[Any, Dict[str, Any]] = {}
++
++def get_endpoint_context(dependant: Any, request: Any = None, websocket: Any = None) -> Optional[Dict[str, Any]]:
++    if dependant not in _endpoint_context_cache:
++        try:
++            func = dependant.call
++            if hasattr(func, "func"):
++                func = func.func
++            try:
++                source_file = inspect.getfile(func)
++                _, start_line = inspect.getsourcelines(func)
++                name = func.__name__
++            except (TypeError, OSError):
++                source_file = "unknown"
++                start_line = 0
++                name = getattr(func, "__name__", "unknown")
++            _endpoint_context_cache[dependant] = {
++                "file": source_file,
++                "line": start_line,
++                "name": name,
++            }
++        except Exception:
++            return None
++    context = _endpoint_context_cache[dependant].copy()
++    if request:
++        context["method"] = getattr(request, "method", "UNKNOWN")
++        context["path"] = getattr(request.url, "path", "UNKNOWN")
++    elif websocket:
++        context["method"] = "WEBSOCKET"
++        context["path"] = getattr(websocket.url, "path", "UNKNOWN")
++    else:
++        return None
++    return context
++
+ from fastapi.types import DecoratedCallable, IncEx
+ from fastapi.utils import (
+     create_cloned_field,

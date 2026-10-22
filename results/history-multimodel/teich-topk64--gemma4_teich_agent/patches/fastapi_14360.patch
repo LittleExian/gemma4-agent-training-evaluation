@@ -1,0 +1,108 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 20cb2c88..9c1c688a 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -785,12 +785,11 @@ def request_params_to_args(
+                     if field.alias != field.name
+                     else field.name.replace("_", "-")
+                 )
++        extraction_key = alias or field.alias
+         value = _get_multidict_value(field, received_params, alias=alias)
+         if value is not None:
+-            params_to_process[field.name] = value
+-        processed_keys.add(alias or field.alias)
+-        processed_keys.add(field.name)
+-
++            params_to_process[extraction_key] = value
++        processed_keys.add(extraction_key)
+     for key in received_params.keys():
+         if key not in processed_keys:
+             if hasattr(received_params, "getlist"):
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..7f680ab0
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,82 @@
++from fastapi import FastAPI, Depends, Query, Header, Cookie
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field
++from fastapi.dependencies.utils import get_cached_model_fields
++
++app = FastAPI()
++
++class QueryModel(BaseModel):
++    q: str = Field(alias="query_param")
++
++@app.get("/query")
++def read_query(params: QueryModel = Depends()):
++    print(f"params type: {type(params)}, params: {params}")
++    return params
++
++class HeaderModel(BaseModel):
++    user_agent: str = Field(alias="User-Agent")
++
++@app.get("/header")
++def read_header(params: HeaderModel = Depends()):
++    return params
++
++class CookieModel(BaseModel):
++    session_id: str = Field(alias="session_id_cookie")
++
++@app.get("/cookie")
++def read_cookie(params: CookieModel = Depends()):
++    return params
++
++client = TestClient(app)
++
++def test_query_alias():
++    # Issue 1: Value extracted by alias, but put into values with key field.name
++    # Should work now.
++    response = client.get("/query", params={"query_param": "hello"})
++    print(f"Response status: {response.status_code}, body: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"q": "hello"}
++
++    # Issue 2: Value passed by name should be an extra parameter in validation error
++    # If we pass 'q' instead of 'query_param', it should fail validation if 'q' is not allowed
++    # But QueryModel doesn't forbid extra fields by default.
++    # Let's use a model that forbids extra fields.
++    pass
++
++class QueryModelForbid(BaseModel):
++    q: str = Field(alias="query_param")
++    model_config = {"extra": "forbid"}
++
++
++@app.get("/query_forbid")
++def read_query_forbid(params: QueryModelForbid = Depends()):
++    return params
++
++def test_query_forbid_alias():
++    # Pass by alias - should work
++    response = client.get("/query_forbid", params={"query_param": "hello"})
++    assert response.status_code == 200
++    assert response.json() == {"q": "hello"}
++
++    # Pass by name - should fail and 'q' should be in input
++    response = client.get("/query_forbid", params={"q": "hello"})
++    assert response.status_code == 422
++    # The error should contain 'q' in the input
++    # Pydantic v2 error format: [{"type": "...", "loc": [...], "msg": "...", "input": "..."}]
++    # But FastAPI wraps it.
++    assert "q" in response.text
++
++if __name__ == "__main__":
++    import pytest
++    # We can't easily run pytest here, so we'll just call the functions
++    try:
++        test_query_alias()
++        print("test_query_alias passed")
++        test_query_forbid_alias()
++        print("test_query_forbid_alias passed")
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

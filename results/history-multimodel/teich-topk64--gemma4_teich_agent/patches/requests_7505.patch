@@ -1,0 +1,103 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..8f1b3f9d
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,34 @@
++
++import sys
++import os
++sys.path.append(os.path.abspath("src"))
++
++from requests._types import is_supports_read, SupportsRead
++from typing import runtime_checkable, Protocol
++
++@runtime_checkable
++class SupportsReadProtocol(Protocol):
++    def read(self, length: int = ...): ...
++
++class Proxy:
++    def __init__(self, obj):
++        self._obj = obj
++    def __getattr__(self, name):
++        return getattr(self._obj, name)
++
++class Reader:
++    def read(self, length: int = 0):
++        return b"data"
++
++reader = Reader()
++proxy = Proxy(reader)
++
++print(f"hasattr(proxy, 'read'): {hasattr(proxy, 'read')}")
++print(f"isinstance(proxy, SupportsRead): {isinstance(proxy, SupportsRead)}")
++print(f"is_supports_read(proxy): {is_supports_read(proxy)}")
++
++# Also check for a normal reader
++print(f"is_supports_read(reader): {is_supports_read(reader)}")
++
++# Also check for something that doesn't support read
++print(f"is_supports_read(123): {is_supports_read(123)}")
+diff --git a/src/requests/_types.py b/src/requests/_types.py
+index b2273d61..71907450 100644
+--- a/src/requests/_types.py
++++ b/src/requests/_types.py
+@@ -17,6 +17,7 @@ from typing import (
+     TypeAlias,
+     TypeVar,
+     runtime_checkable,
++    TypeGuard,
+ )
+ 
+ _T_co = TypeVar("_T_co", covariant=True)
+@@ -29,6 +30,10 @@ class SupportsRead(Protocol[_T_co]):
+     def read(self, length: int = ..., /) -> _T_co: ...
+ 
+ 
++def is_supports_read(obj: Any) -> TypeGuard[SupportsRead]:
++    return isinstance(obj, SupportsRead) or hasattr(obj, "read")
++
++
+ @runtime_checkable
+ class SupportsItems(Protocol[_KT_co, _VT_co]):
+     def items(self) -> Iterable[tuple[_KT_co, _VT_co]]: ...
+diff --git a/src/requests/models.py b/src/requests/models.py
+index ebeba1e3..e464b4b9 100644
+--- a/src/requests/models.py
++++ b/src/requests/models.py
+@@ -36,7 +36,7 @@ from urllib3.filepost import encode_multipart_formdata
+ from urllib3.util import parse_url
+ 
+ from ._internal_utils import to_native_string, unicode_is_ascii
+-from ._types import SupportsRead as _SupportsRead
++from ._types import SupportsRead as _SupportsRead, is_supports_read
+ from .auth import HTTPBasicAuth
+ from .compat import (
+     JSONDecodeError,
+@@ -161,7 +161,7 @@ class RequestEncodingMixin:
+ 
+         if isinstance(data, (str, bytes)):
+             return data
+-        elif isinstance(data, _SupportsRead):
++        elif is_supports_read(data):
+             return data
+         elif hasattr(data, "__iter__"):
+             result: list[tuple[bytes, bytes]] = []
+@@ -238,7 +238,7 @@ class RequestEncodingMixin:
+                 fdata = fp
+             # data that proxies attributes to underlying objects needs hasattr
+             # defensive check for untyped callers
+-            elif isinstance(fp, _SupportsRead) or hasattr(fp, "read"):
++            elif is_supports_read(fp):
+                 fdata = fp.read()
+             elif fp is None:  # defensive check for untyped callers
+                 continue
+@@ -641,7 +641,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+             else:
+                 if raw_data:
+                     body = self._encode_params(raw_data)
+-                    if isinstance(data, basestring) or isinstance(data, _SupportsRead):
++                    if isinstance(data, basestring) or is_supports_read(data):
+                         content_type = None
+                     else:
+                         content_type = "application/x-www-form-urlencoded"

@@ -1,0 +1,72 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index dc663f54..9be37c3f 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -872,20 +872,18 @@ async def _extract_form_body(
+     received_body: FormData,
+ ) -> Dict[str, Any]:
+     values = {}
+-    first_field = body_fields[0]
+-    first_field_info = first_field.field_info
+ 
+     for field in body_fields:
+         value = _get_multidict_value(field, received_body)
+         if (
+-            isinstance(first_field_info, params.File)
++            isinstance(field.field_info, params.File)
+             and is_bytes_field(field)
+             and isinstance(value, UploadFile)
+         ):
+             value = await value.read()
+         elif (
+             is_bytes_sequence_field(field)
+-            and isinstance(first_field_info, params.File)
++            and isinstance(field.field_info, params.File)
+             and value_is_sequence(value)
+         ):
+             # For types
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..31339af0
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,39 @@
++from fastapi import FastAPI, File, Form, UploadFile
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.post("/test_order_1")
++async def test_order_1(file: bytes = File(...), form_data: str = Form(...)):
++    return {"file_len": len(file), "form_data": form_data}
++
++@app.post("/test_order_2")
++async def test_order_2(form_data: str = Form(...), file: bytes = File(...)):
++    return {"file_len": len(file), "form_data": form_data}
++
++client = TestClient(app)
++
++def test_repro():
++    # Test order 1: File then Form (should work)
++    response = client.post(
++        "/test_order_1",
++        data={"form_data": "hello"},
++        files={"file": ("test.txt", b"content")}
++    )
++    assert response.status_code == 200
++    assert response.json() == {"file_len": 7, "form_data": "hello"}
++
++    # Test order 2: Form then File (should fail according to problem statement)
++    response = client.post(
++        "/test_order_2",
++        data={"form_data": "hello"},
++        files={"file": ("test.txt", b"content")}
++    )
++    print(f"Response status code: {response.status_code}")
++    print(f"Response body: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"file_len": 7, "form_data": "hello"}
++
++if __name__ == "__main__":
++    test_repro()

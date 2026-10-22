@@ -1,0 +1,82 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 1e92c1ba..02576b32 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -275,7 +275,7 @@ def get_dependant(
+                     f'The dependency "{dependant.call.__name__}" has a scope of '
+                     '"request", it cannot depend on dependencies with scope "function".'
+                 )
+-            use_security_scopes = security_scopes or []
++            use_security_scopes = list(security_scopes) if security_scopes else []
+             if isinstance(param_details.depends, params.Security):
+                 if param_details.depends.scopes:
+                     use_security_scopes.extend(param_details.depends.scopes)
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..2f32c644
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,63 @@
++
++from fastapi import FastAPI, Depends, Security
++from fastapi.dependencies.utils import get_dependant
++from fastapi.dependencies.models import Dependant
++from fastapi.security.oauth2 import OAuth2PasswordBearer
++
++def dep_scope1(s=Security(scopes=["scope1"])):
++    pass
++
++def dep_scope2(s=Security(scopes=["scope2"]), a=Depends(dep_scope1)):
++    pass
++
++def dep_scope3(s=Security(scopes=["scope3"])):
++    pass
++
++app = FastAPI()
++
++@app.get("/")
++def read_root(b=Depends(dep_scope2), c=Depends(dep_scope3)):
++    return {"hello": "World"}
++
++# Find the APIRoute
++api_route = None
++for route in app.routes:
++    if hasattr(route, 'dependant'):
++        api_route = route
++        break
++
++if api_route is None:
++    raise RuntimeError("Could not find APIRoute")
++
++dependant = api_route.dependant
++
++# dependant is the root
++# dependant.dependencies[0] is dep_scope2
++# dependant.dependencies[0].dependencies[0] is the Security(scopes=["scope2"])
++# dependant.dependencies[0].dependencies[1] is dep_scope1
++# dependant.dependencies[0].dependencies[1].dependencies[0] is the Security(scopes=["scope1"])
++# dependant.dependencies[1] is dep_scope3
++# dependant.dependencies[1].dependencies[0] is the Security(scopes=["scope3"])
++
++dep_scope2_dependant = dependant.dependencies[0]
++# dep_scope2 has two dependencies: s=Security(scopes=["scope2"]) and a=Depends(dep_scope1)
++# The order depends on the signature.
++# s is first, a is second.
++sec_scope2_dependant = dep_scope2_dependant.dependencies[0]
++dep_scope1_dependant = dep_scope2_dependant.dependencies[1]
++sec_scope1_dependant = dep_scope1_dependant.dependencies[0]
++
++dep_scope3_dependant = dependant.dependencies[1]
++sec_scope3_dependant = dep_scope3_dependant.dependencies[0]
++
++print(f"sec_scope2 scopes: {sec_scope2_dependant.security_scopes}")
++print(f"sec_scope1 scopes: {sec_scope1_dependant.security_scopes}")
++print(f"sec_scope3 scopes: {sec_scope3_dependant.security_scopes}")
++
++# Expected:
++# sec_scope2: ['scope2']
++# sec_scope1: ['scope2', 'scope1']
++# sec_scope3: ['scope3']
++
++assert sec_scope3_dependant.security_scopes == ["scope3"]
++print("Test passed!")

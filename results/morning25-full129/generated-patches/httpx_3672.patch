@@ -1,0 +1,69 @@
+diff --git a/src/httpx/_parsers.py b/src/httpx/_parsers.py
+index 830fccd..86717bf 100644
+--- a/src/httpx/_parsers.py
++++ b/src/httpx/_parsers.py
+@@ -375,9 +375,13 @@ class HTTPParser:
+             self.recv_state = State.DONE
+         return body
+ 
+-    def complete(self):
++    @property
++    def keep_alive(self) -> bool:
++        return self.send_keep_alive and self.recv_keep_alive
++
++    def reset(self):
+         is_fully_complete = self.send_state == State.DONE and self.recv_state == State.DONE
+-        is_keepalive = self.send_keep_alive and self.recv_keep_alive
++        is_keepalive = self.keep_alive
+ 
+         if not (is_fully_complete and is_keepalive):
+             self.close()
+diff --git a/src/httpx/_server.py b/src/httpx/_server.py
+index 95226d9..ab472fb 100644
+--- a/src/httpx/_server.py
++++ b/src/httpx/_server.py
+@@ -89,7 +89,7 @@ class HTTPConnection:
+ 
+     # Start it all over again...
+     def _complete(self):
+-        self._parser.complete
++        self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+ 
+@@ -106,7 +106,10 @@ class HTTPServer:
+ def serve_http(endpoint):
+     def handler(stream):
+         connection = HTTPConnection(stream, endpoint)
+-        connection.handle_requests()
++        try:
++            connection.handle_requests()
++        finally:
++            connection.close()
+ 
+     logging.basicConfig(
+         format="%(levelname)s [%(asctime)s] %(name)s - %(message)s",
+@@ -122,5 +125,8 @@ def serve_http(endpoint):
+ 
+ 
+ def run(app):
+-    with serve_http(app) as server:
+-        server.wait()
++    try:
++        with serve_http(app) as server:
++            server.wait()
++    except KeyboardInterrupt:
++        pass
+diff --git a/src/httpx/_streams.py b/src/httpx/_streams.py
+index c88a63f..f53bdb5 100644
+--- a/src/httpx/_streams.py
++++ b/src/httpx/_streams.py
+@@ -127,6 +127,8 @@ class HTTPStream(Stream):
+         return output
+ 
+     def close(self) -> None:
++        while (chunk := self._next_chunk()) != b'':
++            pass
+         self._buffer.close()
+         if self._complete is not None:
+             self._complete()

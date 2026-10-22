@@ -1,0 +1,126 @@
+diff --git a/src/requests/_types.py b/src/requests/_types.py
+index b2273d61..e7ad814d 100644
+--- a/src/requests/_types.py
++++ b/src/requests/_types.py
+@@ -34,6 +34,14 @@ class SupportsItems(Protocol[_KT_co, _VT_co]):
+     def items(self) -> Iterable[tuple[_KT_co, _VT_co]]: ...
+ 
+ 
++def is_supports_read(obj: Any) -> bool:
++    return isinstance(obj, SupportsRead) or hasattr(obj, "read")
++
++
++def is_supports_items(obj: Any) -> bool:
++    return isinstance(obj, SupportsItems) or hasattr(obj, "items")
++
++
+ # These are needed at runtime for default_hooks() return type
+ HookType: TypeAlias = Callable[["Response"], Any]
+ HooksInputType: TypeAlias = Mapping[str, Iterable[HookType] | HookType]
+diff --git a/src/requests/models.py b/src/requests/models.py
+index ebeba1e3..e464b4b9 100644
+--- a/src/requests/models.py
++++ b/src/requests/models.py
+@@ -36,7 +36,7 @@ from urllib3.filepost import encode_multipart_formdata
+ from urllib3.util import parse_url
+ 
+ from ._internal_utils import to_native_string, unicode_is_ascii
+-from ._types import SupportsRead as _SupportsRead
++from ._types import SupportsRead as _SupportsRead, is_supports_read
+ from .auth import HTTPBasicAuth
+ from .compat import (
+     JSONDecodeError,
+@@ -161,7 +161,7 @@ class RequestEncodingMixin:
+ 
+         if isinstance(data, (str, bytes)):
+             return data
+-        elif isinstance(data, _SupportsRead):
++        elif is_supports_read(data):
+             return data
+         elif hasattr(data, "__iter__"):
+             result: list[tuple[bytes, bytes]] = []
+@@ -238,7 +238,7 @@ class RequestEncodingMixin:
+                 fdata = fp
+             # data that proxies attributes to underlying objects needs hasattr
+             # defensive check for untyped callers
+-            elif isinstance(fp, _SupportsRead) or hasattr(fp, "read"):
++            elif is_supports_read(fp):
+                 fdata = fp.read()
+             elif fp is None:  # defensive check for untyped callers
+                 continue
+@@ -641,7 +641,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+             else:
+                 if raw_data:
+                     body = self._encode_params(raw_data)
+-                    if isinstance(data, basestring) or isinstance(data, _SupportsRead):
++                    if isinstance(data, basestring) or is_supports_read(data):
+                         content_type = None
+                     else:
+                         content_type = "application/x-www-form-urlencoded"
+diff --git a/src/requests/utils.py b/src/requests/utils.py
+index fff6edf4..d92ca921 100644
+--- a/src/requests/utils.py
++++ b/src/requests/utils.py
+@@ -42,7 +42,7 @@ from ._internal_utils import (  # noqa: F401
+     HEADER_VALIDATORS,
+     to_native_string,
+ )
+-from ._types import SupportsItems as _SupportsItems
++from ._types import SupportsItems as _SupportsItems, is_supports_items
+ from .compat import (
+     Mapping,
+     bytes,
+@@ -151,7 +151,7 @@ def dict_to_sequence(
+ ) -> Iterable[tuple[Any, Any]]:
+     """Returns an internal sequence dictionary update."""
+ 
+-    if isinstance(d, _SupportsItems):
++    if is_supports_items(d):
+         return d.items()
+ 
+     return d
+@@ -398,7 +398,7 @@ def to_key_val_list(
+     if isinstance(value, (str, bytes, bool, int)):
+         raise ValueError("cannot encode objects that are not 2-tuples")
+ 
+-    if isinstance(value, _SupportsItems):
++    if is_supports_items(value):
+         return list(value.items())
+ 
+     return list(value)
+diff --git a/verify_types.py b/verify_types.py
+new file mode 100644
+index 00000000..b5967cbe
+--- /dev/null
++++ b/verify_types.py
+@@ -0,0 +1,30 @@
++
++from requests._types import is_supports_read, is_supports_items
++from io import BytesIO
++
++class ProxyRead:
++    def read(self, size=-1):
++        return b"test"
++
++class ProxyItems:
++    def items(self):
++        return [("a", 1)]
++
++def test_supports_read():
++    assert is_supports_read(BytesIO(b"test")) is True
++    assert is_supports_read(ProxyRead()) is True
++    assert is_supports_read("test") is False
++
++def test_supports_items():
++    assert is_supports_items({"a": 1}) is True
++    assert is_supports_items(ProxyItems()) is True
++    assert is_supports_items("test") is False
++
++if __name__ == "__main__":
++    try:
++        test_supports_read()
++        test_supports_items()
++        print("All tests passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)

@@ -1,0 +1,121 @@
+diff --git a/fastapi/params.py b/fastapi/params.py
+index 68f98708..e5d0d629 100644
+--- a/fastapi/params.py
++++ b/fastapi/params.py
+@@ -476,6 +476,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+         annotation: Any | None = None,
+         embed: bool | None = None,
+         media_type: str = "application/json",
++        strict_content_type: bool = False,
+         alias: str | None = None,
+         alias_priority: int | None = _Unset,
+         validation_alias: str | AliasPath | AliasChoices | None = None,
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 528c9629..ab9d1a9c 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -369,15 +369,36 @@ def get_request_handler(
+                     if body_bytes:
+                         json_body: Any = Undefined
+                         content_type_value = request.headers.get("content-type")
++                        print(f"DEBUG: content_type_value={content_type_value}, body_field={body_field}, type={type(body_field)}")
+                         if not content_type_value:
++                            if isinstance(body_field, params.Field) and body_field.strict_content_type:
++                                print("DEBUG: Raising 415 for missing content-type")
++                                raise HTTPException(
++                                    status_code=415,
++                                    detail=f"Unsupported Media Type. Expected {body_field.media_type}",
++                                )
+                             json_body = await request.json()
+                         else:
+                             message = email.message.Message()
+                             message["content-type"] = content_type_value
+-                            if message.get_content_maintype() == "application":
+-                                subtype = message.get_content_subtype()
+-                                if subtype == "json" or subtype.endswith("+json"):
+-                                    json_body = await request.json()
++                            maintype = message.get_content_maintype()
++                            subtype = message.get_content_subtype()
++                            print(f"DEBUG: maintype={maintype}, subtype={subtype}")
++                            if maintype == "application" and (subtype == "json" or subtype.endswith("+json")):
++                                if isinstance(body_field, params.Field) and body_field.strict_content_type:
++                                    if f"{maintype}/{subtype}" != body_field.media_type:
++                                        print(f"DEBUG: Raising 415 for mismatched content-type: {maintype}/{subtype} != {body_field.media_type}")
++                                        raise HTTPException(
++                                            status_code=415,
++                                            detail=f"Unsupported Media Type. Expected {body_field.media_type}",
++                                        )
++                                json_body = await request.json()
++                            elif isinstance(body_field, params.Field) and body_field.strict_content_type:
++                                print("DEBUG: Raising 415 for non-json content-type")
++                                raise HTTPException(
++                                    status_code=415,
++                                    detail=f"Unsupported Media Type. Expected {body_field.media_type}",
++                                )
+                         if json_body != Undefined:
+                             body = json_body
+                         else:
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..c453175e
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,58 @@
++from fastapi import FastAPI, Body, HTTPException
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.post("/strict")
++async def strict_endpoint(data: dict = Body(..., strict_content_type=True)):
++    return data
++
++@app.post("/lenient")
++async def lenient_endpoint(data: dict = Body(..., strict_content_type=False)):
++    return data
++
++client = TestClient(app)
++
++def test_strict_no_content_type():
++    import json
++    response = client.post("/strict", content=json.dumps({"foo": "bar"}), headers={})
++    print(f"Status: {response.status_code}, Body: {response.json()}")
++    assert response.status_code == 415
++    assert response.json()["detail"] == "Unsupported Media Type. Expected application/json"
++
++def test_strict_wrong_content_type():
++    import json
++    response = client.post("/strict", content=json.dumps({"foo": "bar"}), headers={"content-type": "application/ld+json"})
++    assert response.status_code == 415
++    assert response.json()["detail"] == "Unsupported Media Type. Expected application/json"
++
++def test_strict_correct_content_type():
++    import json
++    response = client.post("/strict", content=json.dumps({"foo": "bar"}), headers={"content-type": "application/json"})
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++def test_lenient_no_content_type():
++    import json
++    response = client.post("/lenient", content=json.dumps({"foo": "bar"}), headers={})
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++def test_lenient_wrong_content_type():
++    import json
++    response = client.post("/lenient", content=json.dumps({"foo": "bar"}), headers={"content-type": "application/ld+json"})
++    assert response.status_code == 200
++    assert response.json() == {"foo": "bar"}
++
++if __name__ == "__main__":
++    try:
++        test_strict_no_content_type()
++        test_strict_wrong_content_type()
++        test_strict_correct_content_type()
++        test_lenient_no_content_type()
++        test_lenient_wrong_content_type()
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        raise e

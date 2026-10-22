@@ -1,0 +1,126 @@
+diff --git a/check_ann.py b/check_ann.py
+new file mode 100644
+index 00000000..4e01ac6f
+--- /dev/null
++++ b/check_ann.py
+@@ -0,0 +1,19 @@
++
++import functools
++import inspect
++from typing import ForwardRef
++from fastapi.dependencies.utils import get_typed_signature, get_typed_return_annotation
++
++class MyModel:
++    pass
++
++def my_func(a: "MyModel"):
++    return "MyModel"
++
++print(f"my_func annotations: {my_func.__annotations__}")
++
++partial_func = functools.partial(my_func)
++print(f"partial_func annotations: {getattr(partial_func, '__annotations__', 'No annotations')}")
++
++if __name__ == "__main__":
++    print("Done")
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 1a493a9f..9580e1ad 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -1,3 +1,4 @@
++import functools
+ import dataclasses
+ import inspect
+ from contextlib import AsyncExitStack, contextmanager
+@@ -190,10 +191,20 @@ def get_flat_params(dependant: Dependant) -> List[ModelField]:
+     return path_params + query_params + header_params + cookie_params
+ 
+ 
++def get_call_globals(call: Callable[..., Any]) -> Dict[str, Any]:
++    unwrapped = call
++    while isinstance(unwrapped, functools.partial):
++        unwrapped = unwrapped.func
++    unwrapped = inspect.unwrap(unwrapped)
++    globalns = getattr(unwrapped, "__globals__", {})
++    if not globalns and hasattr(unwrapped, "__call__"):
++        globalns = getattr(unwrapped.__call__, "__globals__", {})
++    return globalns
++
++
+ def get_typed_signature(call: Callable[..., Any]) -> inspect.Signature:
+     signature = inspect.signature(call)
+-    unwrapped = inspect.unwrap(call)
+-    globalns = getattr(unwrapped, "__globals__", {})
++    globalns = get_call_globals(call)
+     typed_params = [
+         inspect.Parameter(
+             name=param.name,
+@@ -218,13 +229,12 @@ def get_typed_annotation(annotation: Any, globalns: Dict[str, Any]) -> Any:
+ 
+ def get_typed_return_annotation(call: Callable[..., Any]) -> Any:
+     signature = inspect.signature(call)
+-    unwrapped = inspect.unwrap(call)
+     annotation = signature.return_annotation
+ 
+     if annotation is inspect.Signature.empty:
+         return None
+ 
+-    globalns = getattr(unwrapped, "__globals__", {})
++    globalns = get_call_globals(call)
+     return get_typed_annotation(annotation, globalns)
+ 
+ 
+diff --git a/repro_fix.py b/repro_fix.py
+new file mode 100644
+index 00000000..27601e5a
+--- /dev/null
++++ b/repro_fix.py
+@@ -0,0 +1,48 @@
++
++import functools
++import inspect
++from typing import ForwardRef
++from fastapi.dependencies.utils import get_typed_signature, get_typed_return_annotation
++
++class MyModel:
++    pass
++
++def my_func(a: "MyModel"):
++    return "MyModel"
++
++partial_func = functools.partial(my_func)
++
++def test_get_typed_signature():
++    sig = get_typed_signature(partial_func)
++    param = list(sig.parameters.values())[0]
++    print(f"Param annotation: {param.annotation}")
++    assert param.annotation == MyModel
++
++def test_get_typed_return_annotation():
++    # For return annotation, we need to make sure it's a string for get_typed_annotation to work
++    # But my_func return annotation is not specified, so it's inspect.Signature.empty
++    # Let's redefine my_func
++    pass
++
++def my_func_ret(a: int) -> "MyModel":
++    return "MyModel"
++
++partial_func_ret = functools.partial(my_func_ret)
++
++def test_get_typed_return_annotation_fixed():
++    ret = get_typed_return_annotation(partial_func_ret)
++    print(f"Return annotation: {ret}")
++    assert ret == MyModel
++
++if __name__ == "__main__":
++    try:
++        test_get_typed_signature()
++        print("test_get_typed_signature passed")
++        test_get_typed_return_annotation_fixed()
++        print("test_get_typed_return_annotation passed")
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

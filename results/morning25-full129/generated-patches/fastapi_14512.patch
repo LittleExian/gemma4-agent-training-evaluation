@@ -1,0 +1,137 @@
+diff --git a/repro_discriminator.py b/repro_discriminator.py
+new file mode 100644
+index 00000000..7aafb59d
+--- /dev/null
++++ b/repro_discriminator.py
+@@ -0,0 +1,32 @@
++from typing import Union, Annotated, Literal
++from pydantic import BaseModel, Field
++from fastapi import FastAPI, Body
++from fastapi.dependencies.utils import get_dependant
++from fastapi.params import Body as BodyParam
++from fastapi._compat.v2 import copy_field_info
++import pytest
++
++class Cat(BaseModel):
++    type: Literal["cat"] = "cat"
++    meow: str
++
++class Dog(BaseModel):
++    type: Literal["dog"] = "dog"
++    bark: str
++
++def test_discriminator_preserved():
++    annotation = Annotated[Union[Cat, Dog], Body(discriminator="type")]
++    # Simulate what happens in fastapi/dependencies/utils.py
++    fastapi_annotation = Body(discriminator="type")
++    # This is a simplification of how fastapi_annotation is extracted
++    # In reality, it's extracted from the Annotated
++    
++    # Let's use the actual logic from fastapi/dependencies/utils.py
++    # (simplified)
++    field_info = copy_field_info(field_info=fastapi_annotation, annotation=annotation)
++    
++    print(f"Field info discriminator: {field_info.discriminator}")
++    assert field_info.discriminator == "type"
++
++if __name__ == "__main__":
++    test_discriminator_preserved()
+diff --git a/repro_full.py b/repro_full.py
+new file mode 100644
+index 00000000..2d269a76
+--- /dev/null
++++ b/repro_full.py
+@@ -0,0 +1,46 @@
++from typing import Union, Annotated, Literal
++from pydantic import BaseModel
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++
++class Cat(BaseModel):
++    type: Literal["cat"] = "cat"
++    meow: str
++
++class Dog(BaseModel):
++    type: Literal["dog"] = "dog"
++    bark: str
++
++app = FastAPI()
++
++@app.post("/test")
++async def test_endpoint(item: Annotated[Union[Cat, Dog], Body(discriminator="type")]):
++    return item
++
++client = TestClient(app)
++
++def test_discriminator():
++    # This should work
++    response = client.post("/test", json={"type": "cat", "meow": "meow"})
++    assert response.status_code == 200
++    assert response.json() == {"type": "cat", "meow": "meow"}
++
++    # This should fail because "type" is "cat" but "bark" is provided
++    # If discriminator is working, it should fail with a validation error for "meow" missing
++    # If discriminator is NOT working, it might try to match Dog and fail because "type" is "cat"
++    # or it might try to match Cat and fail because "meow" is missing.
++    
++    # Let's try a case that would fail if discriminator is NOT used.
++    # If discriminator is used, it should immediately know it's a Cat and fail because "meow" is missing.
++    # If discriminator is NOT used, it will try Cat (fail) then try Dog (fail).
++    
++    response = client.post("/test", json={"type": "cat", "bark": "bark"})
++    assert response.status_code == 422
++    
++    # Let's check the error message.
++    # If discriminator is working, the error should be about "meow" missing.
++    # If discriminator is NOT working, it might be a different error.
++    print(response.json())
++
++if __name__ == "__main__":
++    test_discriminator()
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..8e7dc43d
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,41 @@
++
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field
++from typing import Annotated, Union, Literal
++import pytest
++
++app = FastAPI()
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meow: str
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    bark: str
++
++@app.post("/pet")
++async def create_pet(pet: Annotated[Union[Cat, Dog], Body(discriminator="type")]):
++    return pet
++
++client = TestClient(app)
++
++def test_tagged_union_body():
++    # Test Cat
++    response = client.post("/pet", json={"type": "cat", "meow": "meow"})
++    assert response.status_code == 200
++    assert response.json() == {"type": "cat", "meow": "meow"}
++
++    # Test Dog
++    response = client.post("/pet", json={"type": "dog", "bark": "bark"})
++    assert response.status_code == 200
++    assert response.json() == {"type": "dog", "bark": "bark"}
++
++    # Test invalid type
++    response = client.post("/pet", json={"type": "bird", "chirp": "chirp"})
++    assert response.status_code == 422
++
++if __name__ == "__main__":
++    test_tagged_union_body()
++    print("Tests passed!")

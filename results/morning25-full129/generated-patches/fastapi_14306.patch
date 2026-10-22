@@ -1,0 +1,166 @@
+diff --git a/fastapi/exceptions.py b/fastapi/exceptions.py
+index 0620428b..52b3ab0d 100644
+--- a/fastapi/exceptions.py
++++ b/fastapi/exceptions.py
+@@ -155,30 +155,36 @@ class DependencyScopeError(FastAPIError):
+ 
+ 
+ class ValidationException(Exception):
+-    def __init__(self, errors: Sequence[Any]) -> None:
++    def __init__(self, errors: Sequence[Any], *, context: Optional[Dict[str, Any]] = None) -> None:
+         self._errors = errors
++        self.context = context
+ 
+     def errors(self) -> Sequence[Any]:
+         return self._errors
+ 
++    def __str__(self) -> str:
++        message = f"{len(self._errors)} validation errors:\n"
++        for err in self._errors:
++            message += f"  {err}\n"
++        if self.context:
++            ctx = self.context
++            message += f'\n  File "{ctx["file"]}", line {ctx["line"]}, in {ctx["func"]}\n'
++            message += f"    {ctx['method']} {ctx['path']}\n"
++        return message
++
+ 
+ class RequestValidationError(ValidationException):
+-    def __init__(self, errors: Sequence[Any], *, body: Any = None) -> None:
+-        super().__init__(errors)
++    def __init__(self, errors: Sequence[Any], *, body: Any = None, context: Optional[Dict[str, Any]] = None) -> None:
++        super().__init__(errors, context=context)
+         self.body = body
+ 
+ 
+ class WebSocketRequestValidationError(ValidationException):
+-    pass
++    def __init__(self, errors: Sequence[Any], *, context: Optional[Dict[str, Any]] = None) -> None:
++        super().__init__(errors, context=context)
+ 
+ 
+ class ResponseValidationError(ValidationException):
+-    def __init__(self, errors: Sequence[Any], *, body: Any = None) -> None:
+-        super().__init__(errors)
++    def __init__(self, errors: Sequence[Any], *, body: Any = None, context: Optional[Dict[str, Any]] = None) -> None:
++        super().__init__(errors, context=context)
+         self.body = body
+-
+-    def __str__(self) -> str:
+-        message = f"{len(self._errors)} validation errors:\n"
+-        for err in self._errors:
+-            message += f"  {err}\n"
+-        return message
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index c10175b1..d2cf52fb 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -246,7 +246,7 @@ async def serialize_response(
+             errors.append(errors_)
+         if errors:
+             raise ResponseValidationError(
+-                errors=_normalize_errors(errors), body=response_content
++                errors=_normalize_errors(errors), body=response_content, context=context
+             )
+ 
+         if hasattr(field, "serialize"):
+@@ -286,6 +286,37 @@ async def run_endpoint_function(
+         return await run_in_threadpool(dependant.call, **values)
+ 
+ 
++_endpoint_context_cache: Dict[Callable, Dict[str, Any]] = {}
++
++
++def get_endpoint_context(
++    endpoint: Callable
++    , route_path: str
++    , method: str
++) -> Dict[str, Any]:
++    if endpoint in _endpoint_context_cache:
++        return _endpoint_context_cache[endpoint]
++
++    try:
++        file = inspect.getfile(endpoint)
++        lines, start_line = inspect.getsourcelines(endpoint)
++        func_name = endpoint.__name__
++    except Exception:
++        file = "unknown"
++        start_line = 0
++        func_name = "unknown"
++
++    context = {
++        "file": file,
++        "line": start_line + 1,
++        "func": func_name,
++        "method": method,
++        "path": route_path,
++    }
++    _endpoint_context_cache[endpoint] = context
++    return context
++
++
+ def get_request_handler(
+     dependant: Dependant,
+     body_field: Optional[ModelField] = None,
+@@ -300,6 +331,7 @@ def get_request_handler(
+     response_model_exclude_none: bool = False,
+     dependency_overrides_provider: Optional[Any] = None,
+     embed_body_fields: bool = False,
++    context: Optional[Dict[str, Any]] = None,
+ ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+     assert dependant.call is not None, "dependant.call must be a function"
+     is_coroutine = dependant.is_coroutine_callable
+@@ -355,6 +387,7 @@ def get_request_handler(
+                     }
+                 ],
+                 body=e.doc,
++                context=context,
+             )
+             raise validation_error from e
+         except HTTPException:
+@@ -421,7 +454,7 @@ def get_request_handler(
+                 response.headers.raw.extend(solved_result.response.headers.raw)
+         if errors:
+             validation_error = RequestValidationError(
+-                _normalize_errors(errors), body=body
++                _normalize_errors(errors), body=body, context=context
+             )
+             raise validation_error
+ 
+@@ -436,6 +469,7 @@ def get_websocket_app(
+     dependant: Dependant,
+     dependency_overrides_provider: Optional[Any] = None,
+     embed_body_fields: bool = False,
++    context: Optional[Dict[str, Any]] = None,
+ ) -> Callable[[WebSocket], Coroutine[Any, Any, Any]]:
+     async def app(websocket: WebSocket) -> None:
+         async_exit_stack = websocket.scope.get("fastapi_inner_astack")
+@@ -451,7 +485,7 @@ def get_websocket_app(
+         )
+         if solved_result.errors:
+             raise WebSocketRequestValidationError(
+-                _normalize_errors(solved_result.errors)
++                _normalize_errors(solved_result.errors), context=context
+             )
+         assert dependant.call is not None, "dependant.call must be a function"
+         await dependant.call(**solved_result.values)
+@@ -491,6 +525,9 @@ class APIWebSocketRoute(routing.WebSocketRoute):
+                 dependant=self.dependant,
+                 dependency_overrides_provider=dependency_overrides_provider,
+                 embed_body_fields=self._embed_body_fields,
++                context=get_endpoint_context(
++                    self.dependant.call, self.path_format, self.methods[0] if self.methods else ""
++                ),
+             )
+         )
+ 
+@@ -661,6 +698,9 @@ class APIRoute(routing.Route):
+             response_model_exclude_none=self.response_model_exclude_none,
+             dependency_overrides_provider=self.dependency_overrides_provider,
+             embed_body_fields=self._embed_body_fields,
++            context=get_endpoint_context(
++                self.dependant.call, self.path, self.methods[0] if self.methods else ""
++            ),
+         )
+ 
+     def matches(self, scope: Scope) -> Tuple[Match, Scope]:

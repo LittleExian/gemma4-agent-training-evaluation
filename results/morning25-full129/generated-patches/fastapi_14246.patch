@@ -1,0 +1,184 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index fb2c691d..79009c6c 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -179,12 +179,13 @@ def get_schema_from_model_field(
+         Tuple[ModelField, Literal["validation", "serialization"]], JsonSchemaValue
+     ],
+     separate_input_output_schemas: bool = True,
++    mode: Literal["validation", "serialization"] = "validation",
+ ) -> Dict[str, Any]:
+     override_mode: Union[Literal["validation"], None] = (
+         None if separate_input_output_schemas else "validation"
+     )
+     # This expects that GenerateJsonSchema was already used to generate the definitions
+-    json_schema = field_mapping[(field, override_mode or field.mode)]
++    json_schema = field_mapping[(field, override_mode or mode)]
+     if "$ref" not in json_schema:
+         # TODO remove when deprecating Pydantic v1
+         # Ref: https://github.com/pydantic/pydantic/blob/d61792cc42c80b13b23e3ffa74bc37ec7c77f7d1/pydantic/schema.py#L207
+@@ -217,10 +218,16 @@ def get_definitions(
+         f for f in flat_model_fields if f.type_ not in input_types
+     }
+ 
+-    inputs = [
+-        (field, override_mode or field.mode, field._type_adapter.core_schema)
+-        for field in list(fields) + list(unique_flat_model_fields)
+-    ]
++    if separate_input_output_schemas:
++        inputs = []
++        for field in list(fields) + list(unique_flat_model_fields):
++            inputs.append((field, "validation", field._type_adapter.core_schema))
++            inputs.append((field, "serialization", field._type_adapter.core_schema))
++    else:
++        inputs = [
++            (field, override_mode or field.mode, field._type_adapter.core_schema)
++            for field in list(fields) + list(unique_flat_model_fields)
++        ]
+     field_mapping, definitions = schema_generator.generate_definitions(inputs=inputs)
+     for item_def in cast(Dict[str, Dict[str, Any]], definitions).values():
+         if "description" in item_def:
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index dbc93d28..27c758ed 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -354,6 +354,7 @@ def get_openapi_path(
+                             model_name_map=model_name_map,
+                             field_mapping=field_mapping,
+                             separate_input_output_schemas=separate_input_output_schemas,
++                            mode="serialization",
+                         )
+                     else:
+                         response_schema = {}
+@@ -387,6 +388,7 @@ def get_openapi_path(
+                             model_name_map=model_name_map,
+                             field_mapping=field_mapping,
+                             separate_input_output_schemas=separate_input_output_schemas,
++                            mode="serialization",
+                         )
+                         media_type = route_response_media_type or "application/json"
+                         additional_schema = (
+diff --git a/repro_nested.py b/repro_nested.py
+new file mode 100644
+index 00000000..ec399a90
+--- /dev/null
++++ b/repro_nested.py
+@@ -0,0 +1,61 @@
++
++from fastapi import FastAPI
++from pydantic import BaseModel
++from fastapi.openapi.utils import get_openapi
++import json
++
++app = FastAPI()
++
++class Item(BaseModel):
++    name: str
++    description: str
++
++class User(BaseModel):
++    username: str
++    item: Item
++
++@app.post("/user", response_model=User)
++async def create_user(user: User):
++    return user
++
++def test_separate_openapi_schemas_nested():
++    openapi_schema = get_openapi(
++        title="Test",
++        version="1.0.0",
++        routes=app.routes,
++        separate_input_output_schemas=True,
++    )
++    
++    # The schemas for User and Item should be separated into -Input and -Output
++    # because they are used as both input and output.
++    # User is used as input (request body) and output (response_model).
++    # Item is nested in User, so it should also be separated.
++    
++    components = openapi_schema.get("components", {}).get("schemas", {})
++    
++    # Check if User is separated
++    assert "User-Input" in components, "User-Input schema missing"
++    assert "User-Output" in components, "User-Output schema missing"
++    
++    # Check if Item is separated
++    assert "Item-Input" in components, "Item-Input schema missing"
++    assert "Item-Output" in components, "Item-Output schema missing"
++    
++    # Check if User-Input refers to Item-Input
++    user_input_properties = components["User-Input"].get("properties", {}).get("item", {})
++    assert user_input_properties.get("$ref") == "#/components/schemas/Item-Input", f"User-Input should refer to Item-Input, got {user_input_properties.get('$ref')}"
++    
++    # Check if User-Output refers to Item-Output
++    user_output_properties = components["User-Output"].get("properties", {}).get("item", {})
++    assert user_output_properties.get("$ref") == "#/components/schemas/Item-Output", f"User-Output should refer to Item-Output, got {user_output_properties.get('$ref')}"
++
++if __name__ == "__main__":
++    try:
++        test_separate_openapi_schemas_nested()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)
++    except Exception as e:
++        print(f"An error occurred: {e}")
++        exit(1)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..4ffddcca
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,51 @@
++from fastapi import FastAPI
++from fastapi.openapi.utils import get_openapi
++from pydantic import BaseModel, Field
++from typing import List
++
++app = FastAPI()
++
++class Item(BaseModel):
++    name: str
++    description: str = Field(..., exclude=True)
++
++class ItemList(BaseModel):
++    items: List[Item]
++
++@app.get("/items", response_model=ItemList)
++def read_items():
++    return {"items": [{"name": "item1", "description": "desc1"}]}
++
++openapi_schema = get_openapi(
++    title="Test API",
++    version="1.0.0",
++    routes=[app.routes[0]],
++    separate_input_output_schemas=True,
++)
++
++# Check if Item has both validation and serialization schemas
++schemas = openapi_schema["components"]["schemas"]
++item_validation = schemas.get("Item")
++# In FastAPI, separate_input_output_schemas=True should create separate names
++# Let's see what the names are.
++print("Schemas:", list(schemas.keys()))
++
++# If separate_input_output_schemas=True, we expect something like Item and ItemOut
++# or Item and Item_serialization.
++# Let's check the actual generated names.
++# Based on the current implementation of get_compat_model_name_map, it might be different.
++# But we expect at least two schemas for Item if it has different validation/serialization.
++
++# Let's check if the response schema for /items refers to the serialization schema.
++response_schema_ref = openapi_schema["paths"]["/items"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
++print("Response schema ref:", response_schema_ref)
++
++# The response schema should be the serialization one.
++# Let's check if the serialization schema excludes 'description'.
++# We need to find which schema is the serialization one.
++for name, schema in schemas.items():
++    if "Item" in name:
++        print(f"Schema {name}: {schema}")
++
++# If the fix works, the serialization schema should not have 'description'.
++# The validation schema should have 'description'.

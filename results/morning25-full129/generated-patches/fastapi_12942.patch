@@ -1,0 +1,147 @@
+diff --git a/fastapi/_compat.py b/fastapi/_compat.py
+index 8ea5bf25..21ea1a23 100644
+--- a/fastapi/_compat.py
++++ b/fastapi/_compat.py
+@@ -590,6 +590,9 @@ def field_annotation_is_complex(annotation: Union[Type[Any], None]) -> bool:
+     if origin is Union or origin is UnionType:
+         return any(field_annotation_is_complex(arg) for arg in get_args(annotation))
+ 
++    if origin is Annotated:
++        return field_annotation_is_complex(get_args(annotation)[0])
++
+     return (
+         _annotation_is_complex(annotation)
+         or _annotation_is_complex(origin)
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index e49380cb..fbcfab40 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -368,12 +368,18 @@ def analyze_param(
+         use_annotation = annotation
+         type_annotation = annotation
+     # Extract Annotated info
+-    if get_origin(use_annotation) is Annotated:
+-        annotated_args = get_args(annotation)
+-        type_annotation = annotated_args[0]
++    all_annotated_args = []
++    while get_origin(use_annotation) is Annotated:
++        annotated_args = get_args(use_annotation)
++        all_annotated_args.extend(annotated_args[1:])
++        use_annotation = annotated_args[0]
++    type_annotation = use_annotation
++
++    fastapi_annotation = None
++    if all_annotated_args:
+         fastapi_annotations = [
+             arg
+-            for arg in annotated_args[1:]
++            for arg in all_annotated_args
+             if isinstance(arg, (FieldInfo, params.Depends))
+         ]
+         fastapi_specific_annotations = [
+@@ -385,8 +391,7 @@ def analyze_param(
+             fastapi_annotation: Union[FieldInfo, params.Depends, None] = (
+                 fastapi_specific_annotations[-1]
+             )
+-        else:
+-            fastapi_annotation = None
++
+         # Set default for Annotated FieldInfo
+         if isinstance(fastapi_annotation, FieldInfo):
+             # Copy `field_info` because we mutate `field_info.default` below.
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..18022e9e
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,55 @@
++
++from typing import Any, Literal, Annotated, Union
++from pydantic import BaseModel, Discriminator
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++
++class Pie(BaseModel):
++    time_to_cook: int
++    num_ingredients: int
++
++class ApplePie(Pie):
++    fruit: Literal["apple"] = "apple"
++
++class PumpkinPie(Pie):
++    filling: Literal["pumpkin"] = "pumpkin"
++
++def get_discriminator_value(v: Any) -> str:
++    if isinstance(v, dict):
++        return v.get("fruit", v.get("filling"))
++    return getattr(v, "fruit", getattr(v, "filling", None))
++
++# Dummy Tag class as it's not standard
++class Tag:
++    def __init__(self, value):
++        self.value = value
++
++Dessert = Annotated[
++    Annotated[ApplePie, Tag("apple")] | Annotated[PumpkinPie, Tag("pumpkin")],
++    Discriminator(get_discriminator_value),
++]
++
++app = FastAPI()
++@app.post("/dessert")
++async def dinner(dessert: Dessert) -> dict[str, Any]:
++    return dessert.model_dump()
++
++client = TestClient(app)
++
++def test_dessert_body():
++    # This should be recognized as a body field and not a query parameter
++    response = client.post("/dessert", json={"fruit": "apple", "time_to_cook": 10, "num_ingredients": 5})
++    print(f"Status code: {response.status_code}")
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"fruit": "apple", "time_to_cook": 10, "num_ingredients": 5}
++
++if __name__ == "__main__":
++    try:
++        test_dessert_body()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)
+diff --git a/reproduce_issue_simple.py b/reproduce_issue_simple.py
+new file mode 100644
+index 00000000..075560a7
+--- /dev/null
++++ b/reproduce_issue_simple.py
+@@ -0,0 +1,29 @@
++
++from typing import Annotated
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++@app.post("/test")
++async def test_endpoint(val: Annotated[Annotated[int, Body()], "metadata"], q: int):
++    return {"val": val, "q": q}
++
++client = TestClient(app)
++
++def test_nested_annotated():
++    # val should be in body, q should be in query
++    response = client.post("/test", json=123, params={"q": 456})
++    print(f"Status code: {response.status_code}")
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"val": 123, "q": 456}
++
++if __name__ == "__main__":
++    try:
++        test_nested_annotated()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

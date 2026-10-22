@@ -1,0 +1,106 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 91348c8e..2064138a 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -17,6 +17,7 @@ from typing import (
+     Type,
+     Union,
+     cast,
++    get_type_hints,
+ )
+ 
+ import anyio
+@@ -194,12 +195,18 @@ def get_typed_signature(call: Callable[..., Any]) -> inspect.Signature:
+     signature = inspect.signature(call)
+     unwrapped = inspect.unwrap(call)
+     globalns = getattr(unwrapped, "__globals__", {})
++
++    try:
++        type_hints = get_type_hints(call)
++    except Exception:
++        type_hints = {}
++
+     typed_params = [
+         inspect.Parameter(
+             name=param.name,
+             kind=param.kind,
+             default=param.default,
+-            annotation=get_typed_annotation(param.annotation, globalns),
++            annotation=type_hints.get(param.name, get_typed_annotation(param.annotation, globalns)),
+         )
+         for param in signature.parameters.values()
+     ]
+@@ -217,6 +224,13 @@ def get_typed_annotation(annotation: Any, globalns: Dict[str, Any]) -> Any:
+ 
+ 
+ def get_typed_return_annotation(call: Callable[..., Any]) -> Any:
++    try:
++        type_hints = get_type_hints(call)
++        if "return" in type_hints:
++            return type_hints["return"]
++    except Exception:
++        pass
++
+     signature = inspect.signature(call)
+     unwrapped = inspect.unwrap(call)
+     annotation = signature.return_annotation
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..ed69f205
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,23 @@
++
++from __future__ import annotations
++from fastapi import FastAPI
++from pydantic import BaseModel
++from typing import List, get_type_hints
++import inspect
++
++app = FastAPI()
++
++class Item(BaseModel):
++    name: str
++    tags: List[str]
++
++@app.get("/items/")
++def read_items(item: Item) -> Item:
++    return item
++
++if __name__ == "__main__":
++    print(f"get_type_hints(read_items): {get_type_hints(read_items)}")
++    
++    sig = inspect.signature(read_items)
++    for name, param in sig.parameters.items():
++        print(f"Param {name}: {param.annotation}, type: {type(param.annotation)}")
+diff --git a/repro_fix.py b/repro_fix.py
+new file mode 100644
+index 00000000..b556cef7
+--- /dev/null
++++ b/repro_fix.py
+@@ -0,0 +1,25 @@
++from __future__ import annotations
++from typing import List, get_type_hints
++import inspect
++from fastapi.dependencies.utils import get_typed_return_annotation, get_typed_signature
++
++def test_func() -> List[int]:
++    return [1, 2, 3]
++
++def test_repro():
++    ret_ann = get_typed_return_annotation(test_func)
++    print(f"Return annotation: {ret_ann} (type: {type(ret_ann)})")
++    
++    sig = get_typed_signature(test_func)
++    print(f"Signature: {sig}")
++    
++    # In Python 3.10+ with from __future__ import annotations, 
++    # ret_ann should be typing.List[int], not 'List[int]'
++    if isinstance(ret_ann, str):
++        print("FAILED: Return annotation is still a string")
++        exit(1)
++    else:
++        print("PASSED: Return annotation is resolved")
++
++if __name__ == "__main__":
++    test_repro()

@@ -1,0 +1,308 @@
+diff --git a/fastapi/security/api_key.py b/fastapi/security/api_key.py
+index 496c815a..f740bee4 100644
+--- a/fastapi/security/api_key.py
++++ b/fastapi/security/api_key.py
+@@ -5,17 +5,24 @@ from fastapi.openapi.models import APIKey, APIKeyIn
+ from fastapi.security.base import SecurityBase
+ from starlette.exceptions import HTTPException
+ from starlette.requests import Request
+-from starlette.status import HTTP_403_FORBIDDEN
++from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
+ from typing_extensions import Annotated
+ 
+ 
+ class APIKeyBase(SecurityBase):
+-    @staticmethod
+-    def check_api_key(api_key: Optional[str], auto_error: bool) -> Optional[str]:
++    def format_www_authenticate_header_value(self) -> str:
++        """
++        Format the `WWW-Authenticate` header value.
++        """
++        return f'ApiKey in="{self.model.in_}", name="{self.model.name}"'
++
++    def check_api_key(self, api_key: Optional[str]) -> Optional[str]:
+         if not api_key:
+-            if auto_error:
++            if self.auto_error:
+                 raise HTTPException(
+-                    status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
++                    status_code=self.not_authenticated_status_code,
++                    detail="Not authenticated",
++                    headers={"WWW-Authenticate": self.format_www_authenticate_header_value()},
+                 )
+             return None
+         return api_key
+@@ -99,6 +106,15 @@ class APIKeyQuery(APIKeyBase):
+                 """
+             ),
+         ] = True,
++        not_authenticated_status_code: Annotated[
++            int,
++            Doc(
++                """
++                The status code to return when the API key is missing.
++                Defaults to `401`.
++                """
++            ),
++        ] = HTTP_401_UNAUTHORIZED,
+     ):
+         self.model: APIKey = APIKey(
+             **{"in": APIKeyIn.query},
+@@ -107,10 +123,11 @@ class APIKeyQuery(APIKeyBase):
+         )
+         self.scheme_name = scheme_name or self.__class__.__name__
+         self.auto_error = auto_error
++        self.not_authenticated_status_code = not_authenticated_status_code
+ 
+     async def __call__(self, request: Request) -> Optional[str]:
+         api_key = request.query_params.get(self.model.name)
+-        return self.check_api_key(api_key, self.auto_error)
++        return self.check_api_key(api_key)
+ 
+ 
+ class APIKeyHeader(APIKeyBase):
+@@ -187,6 +204,15 @@ class APIKeyHeader(APIKeyBase):
+                 """
+             ),
+         ] = True,
++        not_authenticated_status_code: Annotated[
++            int,
++            Doc(
++                """
++                The status code to return when the API key is missing.
++                Defaults to `401`.
++                """
++            ),
++        ] = HTTP_401_UNAUTHORIZED,
+     ):
+         self.model: APIKey = APIKey(
+             **{"in": APIKeyIn.header},
+@@ -195,10 +221,11 @@ class APIKeyHeader(APIKeyBase):
+         )
+         self.scheme_name = scheme_name or self.__class__.__name__
+         self.auto_error = auto_error
++        self.not_authenticated_status_code = not_authenticated_status_code
+ 
+     async def __call__(self, request: Request) -> Optional[str]:
+         api_key = request.headers.get(self.model.name)
+-        return self.check_api_key(api_key, self.auto_error)
++        return self.check_api_key(api_key)
+ 
+ 
+ class APIKeyCookie(APIKeyBase):
+@@ -275,6 +302,15 @@ class APIKeyCookie(APIKeyBase):
+                 """
+             ),
+         ] = True,
++        not_authenticated_status_code: Annotated[
++            int,
++            Doc(
++                """
++                The status code to return when the API key is missing.
++                Defaults to `401`.
++                """
++            ),
++        ] = HTTP_401_UNAUTHORIZED,
+     ):
+         self.model: APIKey = APIKey(
+             **{"in": APIKeyIn.cookie},
+@@ -283,7 +319,8 @@ class APIKeyCookie(APIKeyBase):
+         )
+         self.scheme_name = scheme_name or self.__class__.__name__
+         self.auto_error = auto_error
++        self.not_authenticated_status_code = not_authenticated_status_code
+ 
+     async def __call__(self, request: Request) -> Optional[str]:
+         api_key = request.cookies.get(self.model.name)
+-        return self.check_api_key(api_key, self.auto_error)
++        return self.check_api_key(api_key)
+diff --git a/fastapi/security/http.py b/fastapi/security/http.py
+index 3a598565..55506158 100644
+--- a/fastapi/security/http.py
++++ b/fastapi/security/http.py
+@@ -75,10 +75,12 @@ class HTTPBase(SecurityBase):
+         scheme_name: Optional[str] = None,
+         description: Optional[str] = None,
+         auto_error: bool = True,
++        not_authenticated_status_code: int = HTTP_403_FORBIDDEN,
+     ):
+         self.model = HTTPBaseModel(scheme=scheme, description=description)
+         self.scheme_name = scheme_name or self.__class__.__name__
+         self.auto_error = auto_error
++        self.not_authenticated_status_code = not_authenticated_status_code
+ 
+     async def __call__(
+         self, request: Request
+@@ -88,7 +90,7 @@ class HTTPBase(SecurityBase):
+         if not (authorization and scheme and credentials):
+             if self.auto_error:
+                 raise HTTPException(
+-                    status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
++                    status_code=self.not_authenticated_status_code, detail="Not authenticated"
+                 )
+             else:
+                 return None
+@@ -179,11 +181,23 @@ class HTTPBasic(HTTPBase):
+                 """
+             ),
+         ] = True,
++        not_authenticated_status_code: Annotated[
++            int,
++            Doc(
++                """
++                The HTTP status code to use when the user is not authenticated.
++                """
++            ),
++        ] = HTTP_401_UNAUTHORIZED,
+     ):
+-        self.model = HTTPBaseModel(scheme="basic", description=description)
+-        self.scheme_name = scheme_name or self.__class__.__name__
++        super().__init__(
++            scheme="basic",
++            scheme_name=scheme_name,
++            description=description,
++            auto_error=auto_error,
++            not_authenticated_status_code=not_authenticated_status_code,
++        )
+         self.realm = realm
+-        self.auto_error = auto_error
+ 
+     async def __call__(  # type: ignore
+         self, request: Request
+@@ -197,14 +211,14 @@ class HTTPBasic(HTTPBase):
+         if not authorization or scheme.lower() != "basic":
+             if self.auto_error:
+                 raise HTTPException(
+-                    status_code=HTTP_401_UNAUTHORIZED,
++                    status_code=self.not_authenticated_status_code,
+                     detail="Not authenticated",
+                     headers=unauthorized_headers,
+                 )
+             else:
+                 return None
+         invalid_user_credentials_exc = HTTPException(
+-            status_code=HTTP_401_UNAUTHORIZED,
++            status_code=self.not_authenticated_status_code,
+             detail="Invalid authentication credentials",
+             headers=unauthorized_headers,
+         )
+@@ -294,10 +308,23 @@ class HTTPBearer(HTTPBase):
+                 """
+             ),
+         ] = True,
++        not_authenticated_status_code: Annotated[
++            int,
++            Doc(
++                """
++                The HTTP status code to use when the user is not authenticated.
++                """
++            ),
++        ] = HTTP_403_FORBIDDEN,
+     ):
++        super().__init__(
++            scheme="bearer",
++            scheme_name=scheme_name,
++            description=description,
++            auto_error=auto_error,
++            not_authenticated_status_code=not_authenticated_status_code,
++        )
+         self.model = HTTPBearerModel(bearerFormat=bearerFormat, description=description)
+-        self.scheme_name = scheme_name or self.__class__.__name__
+-        self.auto_error = auto_error
+ 
+     async def __call__(
+         self, request: Request
+@@ -307,14 +334,14 @@ class HTTPBearer(HTTPBase):
+         if not (authorization and scheme and credentials):
+             if self.auto_error:
+                 raise HTTPException(
+-                    status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
++                    status_code=self.not_authenticated_status_code, detail="Not authenticated"
+                 )
+             else:
+                 return None
+         if scheme.lower() != "bearer":
+             if self.auto_error:
+                 raise HTTPException(
+-                    status_code=HTTP_403_FORBIDDEN,
++                    status_code=self.not_authenticated_status_code,
+                     detail="Invalid authentication credentials",
+                 )
+             else:
+@@ -396,10 +423,22 @@ class HTTPDigest(HTTPBase):
+                 """
+             ),
+         ] = True,
++        not_authenticated_status_code: Annotated[
++            int,
++            Doc(
++                """
++                The HTTP status code to use when the user is not authenticated.
++                """
++            ),
++        ] = HTTP_403_FORBIDDEN,
+     ):
+-        self.model = HTTPBaseModel(scheme="digest", description=description)
+-        self.scheme_name = scheme_name or self.__class__.__name__
+-        self.auto_error = auto_error
++        super().__init__(
++            scheme="digest",
++            scheme_name=scheme_name,
++            description=description,
++            auto_error=auto_error,
++            not_authenticated_status_code=not_authenticated_status_code,
++        )
+ 
+     async def __call__(
+         self, request: Request
+@@ -409,14 +448,14 @@ class HTTPDigest(HTTPBase):
+         if not (authorization and scheme and credentials):
+             if self.auto_error:
+                 raise HTTPException(
+-                    status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
++                    status_code=self.not_authenticated_status_code, detail="Not authenticated"
+                 )
+             else:
+                 return None
+         if scheme.lower() != "digest":
+             if self.auto_error:
+                 raise HTTPException(
+-                    status_code=HTTP_403_FORBIDDEN,
++                    status_code=self.not_authenticated_status_code,
+                     detail="Invalid authentication credentials",
+                 )
+             else:
+diff --git a/fastapi/security/open_id_connect_url.py b/fastapi/security/open_id_connect_url.py
+index 5e99798e..9fbb0902 100644
+--- a/fastapi/security/open_id_connect_url.py
++++ b/fastapi/security/open_id_connect_url.py
+@@ -66,19 +66,28 @@ class OpenIdConnect(SecurityBase):
+                 """
+             ),
+         ] = True,
++        not_authenticated_status_code: Annotated[
++            int,
++            Doc(
++                """
++                The HTTP status code to use when the user is not authenticated.
++                """
++            ),
++        ] = HTTP_403_FORBIDDEN,
+     ):
+         self.model = OpenIdConnectModel(
+             openIdConnectUrl=openIdConnectUrl, description=description
+         )
+         self.scheme_name = scheme_name or self.__class__.__name__
+         self.auto_error = auto_error
++        self.not_authenticated_status_code = not_authenticated_status_code
+ 
+     async def __call__(self, request: Request) -> Optional[str]:
+         authorization = request.headers.get("Authorization")
+         if not authorization:
+             if self.auto_error:
+                 raise HTTPException(
+-                    status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
++                    status_code=self.not_authenticated_status_code, detail="Not authenticated"
+                 )
+             else:
+                 return None

@@ -1,0 +1,192 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index fb2c691d..3e0a20f1 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -219,8 +219,14 @@ def get_definitions(
+ 
+     inputs = [
+         (field, override_mode or field.mode, field._type_adapter.core_schema)
+-        for field in list(fields) + list(unique_flat_model_fields)
++        for field in list(fields)
+     ]
++    for field in list(unique_flat_model_fields):
++        if separate_input_output_schemas:
++            inputs.append((field, "validation", field._type_adapter.core_schema))
++            inputs.append((field, "serialization", field._type_adapter.core_schema))
++        else:
++            inputs.append((field, override_mode or field.mode, field._type_adapter.core_schema))
+     field_mapping, definitions = schema_generator.generate_definitions(inputs=inputs)
+     for item_def in cast(Dict[str, Dict[str, Any]], definitions).values():
+         if "description" in item_def:
+diff --git a/output.json b/output.json
+new file mode 100644
+index 00000000..2e512b8c
+--- /dev/null
++++ b/output.json
+@@ -0,0 +1,138 @@
++{
++  "openapi": "3.1.0",
++  "info": {
++    "title": "FastAPI",
++    "version": "0.1.0"
++  },
++  "paths": {
++    "/test": {
++      "get": {
++        "summary": "Read Root",
++        "operationId": "read_root_test_get",
++        "responses": {
++          "200": {
++            "description": "Successful Response",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/Root"
++                }
++              }
++            }
++          }
++        }
++      },
++      "post": {
++        "summary": "Create Root",
++        "operationId": "create_root_test_post",
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/Root"
++              }
++            }
++          },
++          "required": true
++        },
++        "responses": {
++          "200": {
++            "description": "Successful Response",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/Root"
++                }
++              }
++            }
++          },
++          "422": {
++            "description": "Validation Error",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/HTTPValidationError"
++                }
++              }
++            }
++          }
++        }
++      }
++    }
++  },
++  "components": {
++    "schemas": {
++      "HTTPValidationError": {
++        "properties": {
++          "detail": {
++            "items": {
++              "$ref": "#/components/schemas/ValidationError"
++            },
++            "type": "array",
++            "title": "Detail"
++          }
++        },
++        "type": "object",
++        "title": "HTTPValidationError"
++      },
++      "Nested": {
++        "properties": {
++          "name": {
++            "type": "string",
++            "title": "Name"
++          }
++        },
++        "type": "object",
++        "required": [
++          "name"
++        ],
++        "title": "Nested"
++      },
++      "Root": {
++        "properties": {
++          "nested": {
++            "$ref": "#/components/schemas/Nested"
++          }
++        },
++        "type": "object",
++        "required": [
++          "nested"
++        ],
++        "title": "Root"
++      },
++      "ValidationError": {
++        "properties": {
++          "loc": {
++            "items": {
++              "anyOf": [
++                {
++                  "type": "string"
++                },
++                {
++                  "type": "integer"
++                }
++              ]
++            },
++            "type": "array",
++            "title": "Location"
++          },
++          "msg": {
++            "type": "string",
++            "title": "Message"
++          },
++          "type": {
++            "type": "string",
++            "title": "Error Type"
++          }
++        },
++        "type": "object",
++        "required": [
++          "loc",
++          "msg",
++          "type"
++        ],
++        "title": "ValidationError"
++      }
++    }
++  }
++}
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..e0c9e431
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,22 @@
++import json
++from fastapi import FastAPI
++from pydantic import BaseModel
++
++app = FastAPI(separate_input_output_schemas=True)
++
++class Nested(BaseModel):
++    name: str
++
++class Root(BaseModel):
++    nested: Nested
++
++@app.get("/test", response_model=Root)
++def read_root():
++    return {"nested": {"name": "test"}}
++
++@app.post("/test", response_model=Root)
++def create_root(root: Root):
++    return root
++
++openapi_schema = app.openapi()
++print(json.dumps(openapi_schema, indent=2))

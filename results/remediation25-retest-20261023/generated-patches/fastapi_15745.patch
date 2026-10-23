@@ -1,0 +1,184 @@
+diff --git a/error.log b/error.log
+new file mode 100644
+index 000000000..b7768f93b
+--- /dev/null
++++ b/error.log
+@@ -0,0 +1,6 @@
++/workspace/gemma4-step25-retest-20261023/runs/full129-gpu0-gpu2/tasks/4d871fe193db8349853a39073e8100ae3628890badc8acd5c4d76b97f5b043bc/agent-fastapi-9675f4d73a868949/adapter/tmp/swegemma_sandbox_022caf9f-30e/workspace/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
++  from starlette.testclient import TestClient as TestClient  # noqa
++Testing /router-a/a
++Response: {'val': 'a'}, Status: 200
++Testing /router-b/b
++Response: {'val': 'b'}, Status: 200
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 21a1385a2..5b96ad004 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -1002,6 +1002,49 @@ class APIRoute(routing.Route):
+         return match, child_scope
+ 
+ 
++class RouterInclude:
++    def __init__(
++        self,
++        router: "APIRouter",
++        prefix: str = "",
++        tags: list[str | Enum] | None = None,
++        dependencies: Sequence[params.Depends] | None = None,
++        default_response_class: type[Response] = JSONResponse,
++        responses: dict[int | str, dict[str, Any]] | None = None,
++        callbacks: list[BaseRoute] | None = None,
++        deprecated: bool | None = None,
++        include_in_schema: bool = True,
++    ):
++        self.router = router
++        self.prefix = prefix
++        self.tags = tags
++        self.dependencies = dependencies
++        self.default_response_class = default_response_class
++        self.responses = responses
++        self.callbacks = callbacks
++        self.deprecated = deprecated
++        self.include_in_schema = include_in_schema
++
++    def matches(self, scope: Scope) -> tuple[Match, Scope]:
++        path = scope.get("path", "")
++        if not path.startswith(self.prefix):
++            return Match.NONE, scope
++        child_scope = scope.copy()
++        child_scope["path"] = path[len(self.prefix):]
++        for route in self.router.routes:
++            match, child_scope = route.matches(child_scope)
++            if match != Match.NONE:
++                return match, child_scope
++        return Match.NONE, scope
++
++    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
++        path = scope.get("path", "")
++        if path.startswith(self.prefix):
++            scope = scope.copy()
++            scope["path"] = path[len(self.prefix):]
++        await self.router(scope, receive, send)
++
++
+ class APIRouter(routing.Router):
+     """
+     `APIRouter` class, used to group *path operations*, for example to structure
+@@ -1729,103 +1772,25 @@ class APIRouter(routing.Router):
+                     )
+         if responses is None:
+             responses = {}
+-        for route in router.routes:
+-            if isinstance(route, APIRoute):
+-                combined_responses = {**responses, **route.responses}
+-                use_response_class = get_value_or_default(
+-                    route.response_class,
+-                    router.default_response_class,
+-                    default_response_class,
+-                    self.default_response_class,
+-                )
+-                current_tags = []
+-                if tags:
+-                    current_tags.extend(tags)
+-                if route.tags:
+-                    current_tags.extend(route.tags)
+-                current_dependencies: list[params.Depends] = []
+-                if dependencies:
+-                    current_dependencies.extend(dependencies)
+-                if route.dependencies:
+-                    current_dependencies.extend(route.dependencies)
+-                current_callbacks = []
+-                if callbacks:
+-                    current_callbacks.extend(callbacks)
+-                if route.callbacks:
+-                    current_callbacks.extend(route.callbacks)
+-                current_generate_unique_id = get_value_or_default(
+-                    route.generate_unique_id_function,
+-                    router.generate_unique_id_function,
+-                    generate_unique_id_function,
+-                    self.generate_unique_id_function,
+-                )
+-                self.add_api_route(
+-                    prefix + route.path,
+-                    route.endpoint,
+-                    response_model=route.response_model,
+-                    status_code=route.status_code,
+-                    tags=current_tags,
+-                    dependencies=current_dependencies,
+-                    summary=route.summary,
+-                    description=route.description,
+-                    response_description=route.response_description,
+-                    responses=combined_responses,
+-                    deprecated=route.deprecated or deprecated or self.deprecated,
+-                    methods=route.methods,
+-                    operation_id=route.operation_id,
+-                    response_model_include=route.response_model_include,
+-                    response_model_exclude=route.response_model_exclude,
+-                    response_model_by_alias=route.response_model_by_alias,
+-                    response_model_exclude_unset=route.response_model_exclude_unset,
+-                    response_model_exclude_defaults=route.response_model_exclude_defaults,
+-                    response_model_exclude_none=route.response_model_exclude_none,
+-                    include_in_schema=route.include_in_schema
+-                    and self.include_in_schema
+-                    and include_in_schema,
+-                    response_class=use_response_class,
+-                    name=route.name,
+-                    route_class_override=type(route),
+-                    callbacks=current_callbacks,
+-                    openapi_extra=route.openapi_extra,
+-                    generate_unique_id_function=current_generate_unique_id,
+-                    strict_content_type=get_value_or_default(
+-                        route.strict_content_type,
+-                        router.strict_content_type,
+-                        self.strict_content_type,
+-                    ),
+-                )
+-            elif isinstance(route, routing.Route):
+-                methods = list(route.methods or [])
+-                self.add_route(
+-                    prefix + route.path,
+-                    route.endpoint,
+-                    methods=methods,
+-                    include_in_schema=route.include_in_schema,
+-                    name=route.name,
+-                )
+-            elif isinstance(route, APIWebSocketRoute):
+-                current_dependencies = []
+-                if dependencies:
+-                    current_dependencies.extend(dependencies)
+-                if route.dependencies:
+-                    current_dependencies.extend(route.dependencies)
+-                self.add_api_websocket_route(
+-                    prefix + route.path,
+-                    route.endpoint,
+-                    dependencies=current_dependencies,
+-                    name=route.name,
+-                )
+-            elif isinstance(route, routing.WebSocketRoute):
+-                self.add_websocket_route(
+-                    prefix + route.path, route.endpoint, name=route.name
+-                )
++        self.routes.append(
++            RouterInclude(
++                router=router,
++                prefix=prefix,
++                tags=tags,
++                dependencies=dependencies,
++                default_response_class=default_response_class,
++                responses=responses,
++                callbacks=callbacks,
++                deprecated=deprecated,
++                include_in_schema=include_in_schema,
++            )
++        )
+         for handler in router.on_startup:
+             self.add_event_handler("startup", handler)
+         for handler in router.on_shutdown:
+             self.add_event_handler("shutdown", handler)
+         self.lifespan_context = _merge_lifespan_context(
+-            self.lifespan_context,
+-            router.lifespan_context,
++            self.lifespan_context, router.lifespan_context
+         )
+ 
+     def get(

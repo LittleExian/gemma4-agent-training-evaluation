@@ -1,6 +1,6 @@
 # 历史 129 题评测汇总
 
-已核对 **13 个完整模型/运行配置，共 1677 条逐题记录**，包含此前已发布的 morning25。七模型对比计 7 个配置，属于同一个实验批次；小样本、重试和失败打包不重复计数。日期型目录名沿用原运行标签，实际起止时间见各组 summary。
+已核对 **14 个完整模型/运行配置，共 1806 条逐题记录**，包含此前已发布的 morning25。七模型对比计 7 个配置，属于同一个实验批次；小样本、重试和失败打包不重复计数。日期型目录名沿用原运行标签，实际起止时间见各组 summary。
 
 [对应 Hugging Face checkpoint](CHECKPOINT_MAPPING.md) · [完整参数 JSON](historical-129-index.json) · [汇总 CSV](historical-129-index.csv)
 
@@ -19,6 +19,9 @@
 | repaired-mm--qwen38_coder390 | 40/126 | 70 | 15 / 56 / 160 | 6000 | 未明确记录 / 见配置 | 12 | [结果与配置](history-multimodel/repaired-mm--qwen38_coder390/) |
 | teich-topk64--gemma4_teich_agent | 55/126 | 24 | 15 / 56 / 160 | 6000 | 64 | 12 | [结果与配置](history-multimodel/teich-topk64--gemma4_teich_agent/) |
 | morning25-full129-r3 | 51/126 | 38 | 15 / 56 / 160 | 6000 | 64 | 4 | [结果与配置](morning25-full129/) |
+| remediation25-retest-20261023 | 54/126 | 3 | 15 / 56 / 160 | 6000 | -1 | 4（两卡各2） | [结果与配置](remediation25-retest-20261023/) |
+
+本次重测为同一 remediation step25 权重：seed42、CUDA Graph 实际捕获、消息格式 auto→openai；与上一轮的逐题变化见 [对照记录](remediation25-retest-20261023/comparison-to-prior.json)。多项推理设置同时改变，不将成绩差异解释为单一参数效果。
 
 ## 比较限制
 

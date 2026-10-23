@@ -1,0 +1,116 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..8f80033d
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,13 @@
++from rich.cells import _cell_len
++
++# ZWJ is \u200d
++# Test 1: Simple characters with ZWJ
++# 'A' (1) + ZWJ (0) + 'B' (1) = 2
++text1 = "A\u200dB"
++print(f"Text 1: {text1!r}, Expected: 2, Got: {_cell_len(text1, 'auto')}")
++
++# Test 2: Emoji with ZWJ
++# 👨 (2) + ZWJ (0) + 👩 (2) = 4 (usually, depending on terminal)
++# But rich should at least not skip the second emoji.
++text2 = "\U0001F468\u200d\U0001F469"
++print(f"Text 2: {text2!r}, Expected: 4, Got: {_cell_len(text2, 'auto')}")
+diff --git a/rich/cells.py b/rich/cells.py
+index 15fe7b65..332552ab 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -137,17 +137,29 @@ def _cell_len(text: str, unicode_version: str) -> int:
+ 
+     iter_characters = iter(text)
+ 
++    skip_next_width = False
+     for character in iter_characters:
+         if character in SPECIAL:
+             if character == "\u200d":
+-                next(iter_characters)
+-            elif last_measured_character:
+-                total_width += last_measured_character in cell_table.narrow_to_wide
+-                last_measured_character = None
+-        else:
+-            if character_width := get_character_cell_size(character, unicode_version):
+-                last_measured_character = character
+-                total_width += character_width
++                skip_next_width = True
++                continue
++            if character == "\u200b":
++                continue
++            if character == "\u200c":
++                continue
++            if character == "\u200e":
++                continue
++            if character == "\u200f":
++                continue
++            continue
++
++        width = get_character_cell_size(character, unicode_version)
++        if skip_next_width and width == 2:
++            skip_next_width = False
++            continue
++
++        total_width += width
++        skip_next_width = False
+ 
+     return total_width
+ 
+@@ -173,14 +185,17 @@ def split_graphemes(
+     total_width = 0
+     spans: list[tuple[int, int, int]] = []
+     SPECIAL = {"\u200d", "\ufe0f"}
++    skip_next_width = False
+     while index < codepoint_count:
+         if (character := text[index]) in SPECIAL:
+             if character == "\u200d":
+                 # zero width joiner
+-                index += 2
++                skip_next_width = True
++                index += 1
+                 if spans:
+                     start, _end, cell_length = spans[-1]
+                     spans[-1] = (start, index, cell_length)
++                continue
+             elif last_measured_character:
+                 # variation selector 16
+                 index += 1
+@@ -191,16 +206,35 @@ def split_graphemes(
+                         cell_length += 1
+                         total_width += 1
+                     spans[-1] = (start, index, cell_length)
++            else:
++                index += 1
+             continue
+ 
+         if character_width := get_character_cell_size(character, unicode_version):
++            if skip_next_width and character_width == 2:
++                skip_next_width = False
++                if spans:
++                    start, _end, cell_length = spans[-1]
++                    spans[-1] = (start, index := index + 1, cell_length)
++                else:
++                    spans.append((index, index := index + 1, 2))
++                    total_width += 2
++                continue
++
+             last_measured_character = character
+             spans.append((index, index := index + 1, character_width))
+             total_width += character_width
++            skip_next_width = False
+         elif spans:
+             # zero width characters are associated with the previous character
+             start, _end, cell_length = spans[-1]
+             spans[-1] = (start, index := index + 1, cell_length)
++            skip_next_width = False
++        else:
++            # This is a weird case where the string starts with a zero-width character
++            # We treat it as a single grapheme of width 0
++            spans.append((index, index := index + 1, 0))
++            skip_next_width = False
+ 
+     return (spans, total_width)
+ 

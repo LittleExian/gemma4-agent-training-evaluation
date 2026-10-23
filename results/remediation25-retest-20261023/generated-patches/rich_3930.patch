@@ -1,0 +1,130 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index a8546227..3376d297 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ 
+ from functools import lru_cache
+-from typing import Callable
++from typing import Callable, Iterable
+ 
+ from ._cell_widths import CELL_WIDTHS
+ 
+@@ -45,7 +45,11 @@ def cached_cell_len(text: str) -> int:
+     """
+     if _is_single_cell_widths(text):
+         return len(text)
+-    return sum(map(get_character_cell_size, text))
++    total = 0
++    for grapheme in split_graphemes(text):
++        if grapheme:
++            total += get_character_cell_size(grapheme[0])
++    return total
+ 
+ 
+ def cell_len(text: str, _cell_len: Callable[[str], int] = cached_cell_len) -> int:
+@@ -61,7 +65,11 @@ def cell_len(text: str, _cell_len: Callable[[str], int] = cached_cell_len) -> in
+         return _cell_len(text)
+     if _is_single_cell_widths(text):
+         return len(text)
+-    return sum(map(get_character_cell_size, text))
++    total = 0
++    for grapheme in split_graphemes(text):
++        if grapheme:
++            total += get_character_cell_size(grapheme[0])
++    return total
+ 
+ 
+ @lru_cache(maxsize=4096)
+@@ -93,6 +101,23 @@ def get_character_cell_size(character: str) -> int:
+     return 1
+ 
+ 
++def split_graphemes(text: str) -> Iterable[str]:
++    """Split a string into a list of graphemes."""
++    if not text:
++        return
++
++    grapheme = ""
++    for i, char in enumerate(text):
++        if i > 0:
++            prev_char = text[i - 1]
++            if get_character_cell_size(char) != 0 and prev_char != "\u200d":
++                yield grapheme
++                grapheme = ""
++        grapheme += char
++    if grapheme:
++        yield grapheme
++
++
+ def set_cell_size(text: str, total: int) -> str:
+     """Set the length of a string to fit within given number of cells."""
+ 
+@@ -110,22 +135,17 @@ def set_cell_size(text: str, total: int) -> str:
+     if cell_size < total:
+         return text + " " * (total - cell_size)
+ 
+-    start = 0
+-    end = len(text)
+-
+-    # Binary search until we find the right size
+-    while True:
+-        pos = (start + end) // 2
+-        before = text[: pos + 1]
+-        before_len = cell_len(before)
+-        if before_len == total + 1 and cell_len(before[-1]) == 2:
+-            return before[:-1] + " "
+-        if before_len == total:
+-            return before
+-        if before_len > total:
+-            end = pos
+-        else:
+-            start = pos
++    result = ""
++    current_width = 0
++    for grapheme in split_graphemes(text):
++        g_width = cell_len(grapheme)
++        if current_width + g_width > total:
++            if current_width == total - 1 and g_width == 2:
++                return result + " "
++            return result
++        result += grapheme
++        current_width += g_width
++    return result
+ 
+ 
+ def chop_cells(
+@@ -142,25 +162,22 @@ def chop_cells(
+         A list of strings such that each string in the list has cell width
+         less than or equal to the available width.
+     """
+-    _get_character_cell_size = get_character_cell_size
+     lines: list[list[str]] = [[]]
+-
+     append_new_line = lines.append
+     append_to_last_line = lines[-1].append
+-
+     total_width = 0
+ 
+-    for character in text:
+-        cell_width = _get_character_cell_size(character)
+-        char_doesnt_fit = total_width + cell_width > width
++    for grapheme in split_graphemes(text):
++        grapheme_width = cell_len(grapheme)
++        char_doesnt_fit = total_width + grapheme_width > width
+ 
+         if char_doesnt_fit:
+-            append_new_line([character])
++            append_new_line([grapheme])
+             append_to_last_line = lines[-1].append
+-            total_width = cell_width
++            total_width = grapheme_width
+         else:
+-            append_to_last_line(character)
+-            total_width += cell_width
++            append_to_last_line(grapheme)
++            total_width += grapheme_width
+ 
+     return ["".join(line) for line in lines]
+ 

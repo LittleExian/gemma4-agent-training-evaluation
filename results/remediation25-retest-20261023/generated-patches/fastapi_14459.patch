@@ -1,0 +1,70 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 9b545e4e..978d603e 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -68,9 +68,7 @@ class Dependant:
+ 
+     @cached_property
+     def cache_key(self) -> DependencyCacheKey:
+-        scopes_for_cache = (
+-            tuple(sorted(set(self.oauth_scopes or []))) if self._uses_scopes else ()
+-        )
++        scopes_for_cache = tuple(sorted(set(self.oauth_scopes or [])))
+         return (
+             self.call,
+             scopes_for_cache,
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..aea1c936
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,49 @@
++from fastapi import FastAPI, Depends, Security, HTTPException, status
++from fastapi.openapi.utils import get_openapi_security_definitions
++from fastapi.dependencies.utils import get_flat_dependant, get_dependant
++from fastapi.dependencies.models import Dependant
++from fastapi.security import OAuth2PasswordBearer
++from fastapi.routing import APIRoute
++
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
++
++def dep_without_scopes_security():
++    return "dep_without_scopes_security"
++
++async def dep_with_scopes_security_v2_func(dep_without_scopes=Security(oauth2_scheme, scopes=[])):
++    return "dep_with_scopes_security_v2"
++
++# Root Dependant
++root_dependant = get_dependant(
++    path="/test",
++    call=lambda: "ok",
++    parent_oauth_scopes=[],
++)
++
++# Dep 1: Security(oauth2_scheme, scopes=[])
++dep1 = get_dependant(
++    path="/test",
++    call=oauth2_scheme,
++    own_oauth_scopes=[],
++    parent_oauth_scopes=[],
++)
++root_dependant.dependencies.append(dep1)
++
++# Dep 2: Security(dep_with_scopes_security_v2_func, scopes=["a"])
++# Note: dep_with_scopes_security_v2_func is a function, not a SecurityBase.
++# But it depends on oauth2_scheme.
++dep2 = get_dependant(
++    path="/test",
++    call=dep_with_scopes_security_v2_func,
++    own_oauth_scopes=["a"],
++    parent_oauth_scopes=[],
++)
++root_dependant.dependencies.append(dep2)
++
++# Now let's see what happens.
++flat_dependant = get_flat_dependant(root_dependant, skip_repeats=True)
++
++print(f"Security requirements: {flat_dependant.security_requirements}")
++
++for req in flat_dependant.security_requirements:
++    print(f"Scheme: {req.security_scheme}, Scopes: {req.scopes}")

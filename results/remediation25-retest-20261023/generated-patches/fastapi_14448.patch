@@ -1,0 +1,155 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 2a4d9a01..59b74564 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -6,6 +6,7 @@ from typing import Any, Callable, List, Optional, Sequence, Union
+ 
+ from fastapi._compat import ModelField
+ from fastapi.security.base import SecurityBase
++from fastapi.utils import is_async_callable, is_async_gen_callable, is_gen_callable
+ from fastapi.types import DependencyCacheKey
+ from typing_extensions import Literal
+ 
+@@ -75,37 +76,17 @@ class Dependant:
+                 return True
+         return False
+ 
+-    @cached_property
+-    def _unwrapped_call(self) -> Any:
+-        if self.call is None:
+-            return self.call  # pragma: no cover
+-        unwrapped = inspect.unwrap(self.call)
+-        if isinstance(unwrapped, partial):
+-            unwrapped = unwrapped.func
+-        return unwrapped
+-
+     @cached_property
+     def is_gen_callable(self) -> bool:
+-        if inspect.isgeneratorfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isgeneratorfunction(dunder_call)
++        return is_gen_callable(self.call)
+ 
+     @cached_property
+     def is_async_gen_callable(self) -> bool:
+-        if inspect.isasyncgenfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isasyncgenfunction(dunder_call)
++        return is_async_gen_callable(self.call)
+ 
+     @cached_property
+     def is_coroutine_callable(self) -> bool:
+-        if inspect.isroutine(self._unwrapped_call):
+-            return iscoroutinefunction(self._unwrapped_call)
+-        if inspect.isclass(self._unwrapped_call):
+-            return False
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return iscoroutinefunction(dunder_call)
++        return is_async_callable(self.call)
+ 
+     @cached_property
+     def computed_scope(self) -> Union[str, None]:
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index c10175b1..6fe3ebdb 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -57,12 +57,12 @@ from fastapi.utils import (
+     create_model_field,
+     generate_unique_id,
+     get_value_or_default,
++    is_async_callable,
+     is_body_allowed_for_status_code,
+ )
+ from pydantic import BaseModel
+ from starlette import routing
+ from starlette._exception_handler import wrap_app_handling_exceptions
+-from starlette._utils import is_async_callable
+ from starlette.concurrency import run_in_threadpool
+ from starlette.exceptions import HTTPException
+ from starlette.requests import Request
+diff --git a/fastapi/utils.py b/fastapi/utils.py
+index b3b89ed2..f29ba6ce 100644
+--- a/fastapi/utils.py
++++ b/fastapi/utils.py
+@@ -1,3 +1,6 @@
++import inspect
++import sys
++from functools import partial
+ import re
+ import warnings
+ from dataclasses import is_dataclass
+@@ -32,6 +35,11 @@ from pydantic import BaseModel
+ from pydantic.fields import FieldInfo
+ from typing_extensions import Literal
+ 
++if sys.version_info >= (3, 13):  # pragma: no cover
++    from inspect import iscoroutinefunction
++else:  # pragma: no cover
++    from asyncio import iscoroutinefunction
++
+ if TYPE_CHECKING:  # pragma: nocover
+     from .routing import APIRoute
+ 
+@@ -257,4 +265,59 @@ def get_value_or_default(
+     for item in items:
+         if not isinstance(item, DefaultPlaceholder):
+             return item
+-    return first_item
++
++def get_unwrapped_callables(func: Any) -> list[Any]:
++    """
++    Recursively extract all callables in the chain of wrappers and partials.
++    """
++    callables = [func]
++    while True:
++        current = callables[-1]
++        # Handle functools.partial
++        if isinstance(current, partial):
++            # The actual function being wrapped
++            func_to_unwrap = current.func
++            if func_to_unwrap != current:
++                callables.append(func_to_unwrap)
++            else:
++                break
++        # Handle functools.wraps (__wrapped__)
++        elif hasattr(current, "__wrapped__"):
++            wrapped = current.__wrapped__
++            if wrapped != current:
++                callables.append(wrapped)
++            else:
++                break
++        else:
++            break
++    return callables
++
++
++def is_async_callable(func: Any) -> bool:
++    """
++    Check if any callable in the chain is asynchronous.
++    """
++    for callable_ in get_unwrapped_callables(func):
++        if iscoroutinefunction(callable_):
++            return True
++    return False
++
++
++def is_async_gen_callable(func: Any) -> bool:
++    """
++    Check if any callable in the chain is an async generator.
++    """
++    for callable_ in get_unwrapped_callables(func):
++        if inspect.isasyncgenfunction(callable_):
++            return True
++    return False
++
++
++def is_gen_callable(func: Any) -> bool:
++    """
++    Check if any callable in the chain is a generator.
++    """
++    for callable_ in get_unwrapped_callables(func):
++        if inspect.isgeneratorfunction(callable_):
++            return True
++    return False

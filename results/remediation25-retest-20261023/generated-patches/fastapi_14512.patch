@@ -1,0 +1,112 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 46a30b3e..d7998b10 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -161,6 +161,8 @@ class ModelField:
+ def get_annotation_from_field_info(
+     annotation: Any, field_info: FieldInfo, field_name: str
+ ) -> Any:
++    if get_origin(annotation) is Annotated:
++        return get_args(annotation)[0]
+     return annotation
+ 
+ 
+diff --git a/fastapi/utils.py b/fastapi/utils.py
+index b3b89ed2..87fa2b67 100644
+--- a/fastapi/utils.py
++++ b/fastapi/utils.py
+@@ -30,6 +30,7 @@ from fastapi._compat import (
+ from fastapi.datastructures import DefaultPlaceholder, DefaultType
+ from pydantic import BaseModel
+ from pydantic.fields import FieldInfo
++from typing import Annotated, get_args, get_origin
+ from typing_extensions import Literal
+ 
+ if TYPE_CHECKING:  # pragma: nocover
+@@ -116,9 +117,26 @@ def create_model_field(
+     elif PYDANTIC_V2:
+         from ._compat import v2
+ 
+-        field_info = field_info or FieldInfo(
+-            annotation=type_, default=default, alias=alias
+-        )
++        discriminator = None
++        actual_type = type_
++        if get_origin(type_) is Annotated:
++            args = get_args(type_)
++            actual_type = args[0]
++            for arg in args[1:]:
++                if isinstance(arg, FieldInfo) and arg.discriminator is not None:
++                    discriminator = arg.discriminator
++                    break
++
++        if field_info is None:
++            field_info = FieldInfo(
++                annotation=actual_type, default=default, alias=alias, discriminator=discriminator
++            )
++        else:
++            if discriminator is not None:
++                field_info.discriminator = discriminator
++            if field_info.annotation is None:
++                field_info.annotation = actual_type
++
+         kwargs = {"mode": mode, "name": name, "field_info": field_info}
+         try:
+             return v2.ModelField(**kwargs)  # type: ignore[return-value,arg-type]
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..0e7b025e
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,51 @@
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field
++from typing import Union, Annotated
++
++app = FastAPI()
++
++class A(BaseModel):
++    type: str = "A"
++    a: str
++
++class B(BaseModel):
++    type: str = "B"
++    b: str
++
++@app.post("/test")
++async def test_endpoint(
++    data: Annotated[Annotated[Union[A, B], Field(discriminator="type")], Body()]
++):
++    return data
++
++client = TestClient(app)
++
++def test_discriminator():
++    # Test case A
++    response = client.post("/test", json={"type": "A", "a": "hello"})
++    assert response.status_code == 200
++    assert response.json() == {"type": "A", "a": "hello"}
++
++    # Test case B
++    response = client.post("/test", json={"type": "B", "b": "world"})
++    assert response.status_code == 200
++    assert response.json() == {"type": "B", "b": "world"}
++
++    # Test case invalid discriminator
++    response = client.post("/test", json={"type": "C", "a": "hello"})
++    assert response.status_code == 422
++
++    # Test case missing discriminator
++    response = client.post("/test", json={"a": "hello"})
++    assert response.status_code == 422
++
++if __name__ == "__main__":
++    try:
++        test_discriminator()
++        print("Tests passed!")
++    except Exception as e:
++        print(f"Tests failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

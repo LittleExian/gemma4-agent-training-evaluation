@@ -1,0 +1,203 @@
+diff --git a/fastapi/applications.py b/fastapi/applications.py
+index c7c551e4e..ff9e38311 100644
+--- a/fastapi/applications.py
++++ b/fastapi/applications.py
+@@ -4692,3 +4692,9 @@ class FastAPI(Starlette):
+             return func
+ 
+         return decorator
++
++    def iter_route_contexts(self) -> Iterator["_EffectiveRouteContext"]:
++        """
++        Iterate over all route contexts, including those in nested routers.
++        """
++        return self.router.iter_route_contexts()
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 48c0c2153..e2fbd452e 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -1454,6 +1454,78 @@ class _EffectiveRouteContext:
+         return URLPath(path=path, protocol="http")
+ 
+ 
++def _build_effective_context(
++    include_context: _RouterIncludeContext,
++    route: BaseRoute,
++) -> _EffectiveRouteContext | None:
++    if isinstance(route, APIRoute):
++        return _EffectiveRouteContext.from_api_route(
++            original_route=route,
++            include_context=include_context,
++        )
++    if isinstance(route, routing.Route):
++        starlette_route: BaseRoute = routing.Route(
++            include_context.path_for(route),
++            endpoint=route.endpoint,
++            methods=list(route.methods or []),
++            name=route.name,
++            include_in_schema=route.include_in_schema,
++        )
++        return _EffectiveRouteContext(
++            original_route=route,
++            starlette_route=starlette_route,
++        )
++    if isinstance(route, APIWebSocketRoute):
++        starlette_route = APIWebSocketRoute(
++            include_context.path_for(route),
++            endpoint=route.endpoint,
++            name=route.name,
++            dependencies=[*include_context.dependencies, *route.dependencies],
++            dependency_overrides_provider=(
++                include_context.dependency_overrides_provider
++            ),
++        )
++        return _EffectiveRouteContext(
++            original_route=route,
++            starlette_route=starlette_route,
++        )
++    if isinstance(route, routing.WebSocketRoute):
++        starlette_route = routing.WebSocketRoute(
++            include_context.path_for(route), route.endpoint, name=route.name
++        )
++        return _EffectiveRouteContext(
++            original_route=route,
++            starlette_route=starlette_route,
++        )
++    if isinstance(route, routing.Mount):
++        starlette_route = copy.copy(route)
++        starlette_route.path = include_context.path_for(route).rstrip("/")
++        (
++            starlette_route.path_regex,
++            starlette_route.path_format,
++            starlette_route.param_convertors,
++        ) = compile_path(starlette_route.path + "/{path:path}")
++        return _EffectiveRouteContext(
++            original_route=route,
++            starlette_route=starlette_route,
++        )
++    if isinstance(route, routing.Host):
++        if include_context.prefix:
++            prefixed_app: ASGIApp = routing.Router(
++                routes=[routing.Mount(include_context.prefix, app=route.app)]
++            )
++        else:
++            prefixed_app = route.app
++        starlette_route = routing.Host(
++            route.host, app=prefixed_app, name=route.name
++        )
++        return _EffectiveRouteContext(
++            original_route=route,
++            starlette_route=starlette_route,
++        )
++    return None
++
++
+ @dataclass
+ class _IncludedRouter(BaseRoute):
+     original_router: "APIRouter"
+@@ -1478,82 +1550,12 @@ class _IncludedRouter(BaseRoute):
+                 )
+                 self._effective_candidates.append(child_branch)
+                 continue
+-            route_context = self._build_effective_context(route)
++            route_context = _build_effective_context(self.include_context, route)
+             if route_context is not None:
+                 self._effective_candidates.append(route_context)
+         self._effective_candidates_version = routes_version
+         return self._effective_candidates
+ 
+-    def _build_effective_context(
+-        self, route: BaseRoute
+-    ) -> _EffectiveRouteContext | None:
+-        if isinstance(route, APIRoute):
+-            return _EffectiveRouteContext.from_api_route(
+-                original_route=route,
+-                include_context=self.include_context,
+-            )
+-        if isinstance(route, routing.Route):
+-            starlette_route: BaseRoute = routing.Route(
+-                self.include_context.path_for(route),
+-                endpoint=route.endpoint,
+-                methods=list(route.methods or []),
+-                name=route.name,
+-                include_in_schema=route.include_in_schema,
+-            )
+-            return _EffectiveRouteContext(
+-                original_route=route,
+-                starlette_route=starlette_route,
+-            )
+-        if isinstance(route, APIWebSocketRoute):
+-            starlette_route = APIWebSocketRoute(
+-                self.include_context.path_for(route),
+-                endpoint=route.endpoint,
+-                name=route.name,
+-                dependencies=[*self.include_context.dependencies, *route.dependencies],
+-                dependency_overrides_provider=(
+-                    self.include_context.dependency_overrides_provider
+-                ),
+-            )
+-            return _EffectiveRouteContext(
+-                original_route=route,
+-                starlette_route=starlette_route,
+-            )
+-        if isinstance(route, routing.WebSocketRoute):
+-            starlette_route = routing.WebSocketRoute(
+-                self.include_context.path_for(route), route.endpoint, name=route.name
+-            )
+-            return _EffectiveRouteContext(
+-                original_route=route,
+-                starlette_route=starlette_route,
+-            )
+-        if isinstance(route, routing.Mount):
+-            starlette_route = copy.copy(route)
+-            starlette_route.path = self.include_context.path_for(route).rstrip("/")
+-            (
+-                starlette_route.path_regex,
+-                starlette_route.path_format,
+-                starlette_route.param_convertors,
+-            ) = compile_path(starlette_route.path + "/{path:path}")
+-            return _EffectiveRouteContext(
+-                original_route=route,
+-                starlette_route=starlette_route,
+-            )
+-        if isinstance(route, routing.Host):
+-            if self.include_context.prefix:
+-                prefixed_app: ASGIApp = routing.Router(
+-                    routes=[routing.Mount(self.include_context.prefix, app=route.app)]
+-                )
+-            else:
+-                prefixed_app = route.app
+-            starlette_route = routing.Host(
+-                route.host, app=prefixed_app, name=route.name
+-            )
+-            return _EffectiveRouteContext(
+-                original_route=route,
+-                starlette_route=starlette_route,
+-            )
+-        return None
+-
+     def _match(
+         self, scope: Scope
+     ) -> tuple[Match, Scope, BaseRoute | None, _EffectiveRouteContext | None]:
+@@ -5636,3 +5638,21 @@ class APIRouter(routing.Router):
+             return func
+ 
+         return decorator
++
++    def iter_route_contexts(self) -> Iterator["_EffectiveRouteContext"]:
++        """
++        Iterate over all route contexts, including those in nested routers.
++        """
++        yield from self._iter_route_contexts(_RouterIncludeContext())
++
++    def _iter_route_contexts(
++        self, include_context: "_RouterIncludeContext"
++    ) -> Iterator["_EffectiveRouteContext"]:
++        for route in self.routes:
++            if isinstance(route, _IncludedRouter):
++                child_context = include_context.combine(route.include_context)
++                yield from route.original_router._iter_route_contexts(child_context)
++                continue
++            route_context = _build_effective_context(include_context, route)
++            if route_context is not None:
++                yield route_context

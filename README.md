@@ -4,19 +4,22 @@
 
 ## 历史全量评测
 
-已整理 **13 个完整的 129 题配置**：早期 budget 两轮、校准基线、七模型对比、Teich top-k64 重跑、LoRA246，以及 morning25。详见 [历史汇总表](results/HISTORICAL_129.md)、[参数 CSV](results/historical-129-index.csv) 和各组逐题结果。不同预算和环境的成绩分开注明，不视为受控排行榜。
+已整理 **14 个完整的 129 题配置**：早期 budget 两轮、校准基线、七模型对比、Teich top-k64 重跑、LoRA246，以及 morning25 原始运行和本次重测。详见 [历史汇总表](results/HISTORICAL_129.md)、[参数 CSV](results/historical-129-index.csv) 和各组逐题结果。不同预算和环境的成绩分开注明，不视为受控排行榜。
 
 ## 当前实验
 
 | 实验 | 状态 / 结果 | 对应文件 |
 |---|---|---|
+| remediation checkpoint-25 推理配置重测（10月23日） | 已完成：**54/126（42.86%）**，3 次超时、0 基础设施错误；top-k−1、seed42、CUDA Graph、auto→openai，两卡各2路 | [逐题 CSV](results/remediation25-retest-20261023/task-results.csv)、[配置与证据](results/remediation25-retest-20261023/) |
 | 早上 remediation 训练 checkpoint-25 的 129 题评测 | 已完成：**51/126（40.48%）**，38 道达到时间预算；3 道已知异常单列 | [逐题 CSV](results/morning25-full129/task-results.csv)、[完整结构化结果](results/morning25-full129/task-results.json) |
 | 新版 deployment-prefix-v2 双卡训练 | **运行中快照：247/356 步**，采集时间北京时间 2026-10-22 21:59；最终训练结果尚未包含 | [进度](results/training-prefix-v2/progress.json)、[rank0 指标](results/training-prefix-v2/metrics.rank0.jsonl)、[采集元数据](results/collection-metadata.json) |
 | 旧 morning remediation 训练 | 按用户指示停止，保留 checkpoint-175 | [停止记录](results/training-morning-remediation-stopped/training-stop.json) |
 
 51/126 的成绩对应 **早上 remediation checkpoint-25**。新版 prefix-v2 checkpoint-25 / checkpoint-50 的权重另行保存，下表给出各自地址；新版 adapter 的 129 题质量结果尚未纳入此快照。
 
-### 129 题结果
+最新重测结果为 **54/126**；以下 51/126 表格与“运行配置”保留原始 morning25 运行说明，重测实际配置见 [新运行](results/remediation25-retest-20261023/)。
+
+### 原始 morning25 的 129 题结果
 
 | 项目 | 数值 |
 |---|---:|
@@ -68,7 +71,7 @@ provenance/                    来源及原始/公开字节哈希
 
 | Adapter | Hugging Face |
 |---|---|
-| 早上 remediation checkpoint-25（本次51/126） | [runs/remediation-20261022/checkpoint-25](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/79d76f1f79c79aec6645d0906f4088b417c8730a/runs/remediation-20261022/checkpoint-25) |
+| 早上 remediation checkpoint-25（原51/126；重测54/126） | [runs/remediation-20261022/checkpoint-25](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/79d76f1f79c79aec6645d0906f4088b417c8730a/runs/remediation-20261022/checkpoint-25) |
 | 新版 prefix-v2 checkpoint-25 | [runs/prefix-v2-20261022/checkpoint-25](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/79d76f1f79c79aec6645d0906f4088b417c8730a/runs/prefix-v2-20261022/checkpoint-25) |
 | 新版 prefix-v2 checkpoint-50 | [runs/prefix-v2-20261022/checkpoint-50](https://huggingface.co/eexian/gemma4-31b-w4-weighted-reasoning-lora/tree/79d76f1f79c79aec6645d0906f4088b417c8730a/runs/prefix-v2-20261022/checkpoint-50) |
 

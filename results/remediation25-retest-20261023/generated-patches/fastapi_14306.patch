@@ -1,0 +1,70 @@
+diff --git a/fastapi/exceptions.py b/fastapi/exceptions.py
+index 0620428b..efe78a21 100644
+--- a/fastapi/exceptions.py
++++ b/fastapi/exceptions.py
+@@ -157,10 +157,19 @@ class DependencyScopeError(FastAPIError):
+ class ValidationException(Exception):
+     def __init__(self, errors: Sequence[Any]) -> None:
+         self._errors = errors
++        self.endpoint_context: Optional[str] = None
+ 
+     def errors(self) -> Sequence[Any]:
+         return self._errors
+ 
++    def __str__(self) -> str:
++        message = f"{len(self._errors)} validation errors:\n"
++        for err in self._errors:
++            message += f"  {err}\n"
++        if self.endpoint_context:
++            message += f"Endpoint context: {self.endpoint_context}\n"
++        return message
++
+ 
+ class RequestValidationError(ValidationException):
+     def __init__(self, errors: Sequence[Any], *, body: Any = None) -> None:
+@@ -176,9 +185,3 @@ class ResponseValidationError(ValidationException):
+     def __init__(self, errors: Sequence[Any], *, body: Any = None) -> None:
+         super().__init__(errors)
+         self.body = body
+-
+-    def __str__(self) -> str:
+-        message = f"{len(self._errors)} validation errors:\n"
+-        for err in self._errors:
+-            message += f"  {err}\n"
+-        return message
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index c10175b1..9af65b1e 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -288,6 +288,7 @@ async def run_endpoint_function(
+ 
+ def get_request_handler(
+     dependant: Dependant,
++    route: APIRoute,
+     body_field: Optional[ModelField] = None,
+     status_code: Optional[int] = None,
+     response_class: Union[Type[Response], DefaultPlaceholder] = Default(JSONResponse),
+@@ -646,9 +647,23 @@ class APIRoute(routing.Route):
+         )
+         self.app = request_response(self.get_route_handler())
+ 
++    @functools.cached_property
++    def endpoint_context(self) -> str:
++        try:
++            # Get the source file and line number of the endpoint function
++            frame = inspect.getframeinfo(inspect.getfile(self.endpoint), self.endpoint.__code__.co_firstlineno)
++            filename = frame.filename
++            lineno = frame.lineno
++            func_name = self.endpoint.__name__
++            methods = ",".join(sorted(self.methods))
++            return f"{filename}:{lineno} ({func_name}, {methods}, {self.path})"
++        except Exception:
++            return "Unknown"
++
+     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+         return get_request_handler(
+             dependant=self.dependant,
++            route=self,
+             body_field=self.body_field,
+             status_code=self.status_code,
+             response_class=self.response_class,

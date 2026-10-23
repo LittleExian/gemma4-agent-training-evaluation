@@ -1,0 +1,93 @@
+diff --git a/rich/console.py b/rich/console.py
+index 5929fb1c..189ab111 100644
+--- a/rich/console.py
++++ b/rich/console.py
+@@ -971,6 +971,12 @@ class Console:
+             # return False because we aren't in a terminal anymore
+             return False
+ 
++    @property
++    def is_interactive(self) -> bool:
++        """Check if the console is interactive."""
++        environ = getattr(self, "_environ", os.environ)
++        return self.is_terminal and environ.get("TTY_INTERACTIVE", "1") != "0"
++
+     @property
+     def is_dumb_terminal(self) -> bool:
+         """Detect dumb terminal.
+diff --git a/rich/progress.py b/rich/progress.py
+index ef6ad60f..1933b5a6 100644
+--- a/rich/progress.py
++++ b/rich/progress.py
+@@ -1093,7 +1093,7 @@ class Progress(JupyterMixin):
+         self.columns = columns or self.get_default_columns()
+         self.speed_estimate_period = speed_estimate_period
+ 
+-        self.disable = disable
++        self.disable = disable or not (console or get_console()).is_interactive
+         self.expand = expand
+         self._tasks: Dict[TaskID, Task] = {}
+         self._task_index: TaskID = TaskID(0)
+diff --git a/rich/status.py b/rich/status.py
+index 65744838..0f707bc8 100644
+--- a/rich/status.py
++++ b/rich/status.py
+@@ -29,10 +29,12 @@ class Status(JupyterMixin):
+         spinner_style: StyleType = "status.spinner",
+         speed: float = 1.0,
+         refresh_per_second: float = 12.5,
++        disable: bool = False,
+     ):
+         self.status = status
+         self.spinner_style = spinner_style
+         self.speed = speed
++        self.disable = disable or not (console or get_console()).is_interactive
+         self._spinner = Spinner(spinner, text=status, style=spinner_style, speed=speed)
+         self._live = Live(
+             self.renderable,
+@@ -84,6 +86,8 @@ class Status(JupyterMixin):
+ 
+     def start(self) -> None:
+         """Start the status animation."""
++        if self.disable:
++            return
+         self._live.start()
+ 
+     def stop(self) -> None:
+diff --git a/verify_tty_interactive.py b/verify_tty_interactive.py
+new file mode 100644
+index 00000000..dfcebb35
+--- /dev/null
++++ b/verify_tty_interactive.py
+@@ -0,0 +1,31 @@
++
++import os
++from rich.console import Console
++from rich.progress import Progress
++from rich.status import Status
++
++def test_progress_disabled():
++    os.environ["TTY_INTERACTIVE"] = "0"
++    console = Console()
++    with Progress(console=console) as progress:
++        # If disabled, progress.disable should be True
++        print(f"Progress disabled: {progress.disable}")
++        assert progress.disable is True
++
++def test_status_disabled():
++    os.environ["TTY_INTERACTIVE"] = "0"
++    console = Console()
++    with Status("Working...", console=console) as status:
++        # If disabled, status.disable should be True
++        print(f"Status disabled: {status.disable}")
++        assert status.disable is True
++
++if __name__ == "__main__":
++    try:
++        test_progress_disabled()
++        print("Progress test passed")
++        test_status_disabled()
++        print("Status test passed")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        exit(1)

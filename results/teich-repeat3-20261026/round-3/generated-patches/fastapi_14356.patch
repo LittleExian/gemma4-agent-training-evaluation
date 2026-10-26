@@ -1,0 +1,126 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 2b2e6c5a..96b1a773 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -747,6 +747,7 @@ def _get_multidict_value(
+ def request_params_to_args(
+     fields: Sequence[ModelField],
+     received_params: Union[Mapping[str, Any], QueryParams, Headers],
++    support_lists: bool = True,
+ ) -> Tuple[Dict[str, Any], List[Any]]:
+     values: Dict[str, Any] = {}
+     errors: List[Dict[str, Any]] = []
+@@ -793,7 +794,11 @@ def request_params_to_args(
+ 
+     for key, value in received_params.items():
+         if key not in processed_keys:
+-            params_to_process[key] = value
++            if support_lists and isinstance(received_params, (ImmutableMultiDict, Headers)):
++                values_list = received_params.getlist(key)
++                params_to_process[key] = values_list if len(values_list) > 1 else values_list[0]
++            else:
++                params_to_process[key] = value
+ 
+     if single_not_embedded_field:
+         field_info = first_field.field_info
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..8b7e017f
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,47 @@
++from fastapi import FastAPI, Depends, Query, Header
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, ConfigDict
++from typing import List, Optional
++
++app = FastAPI()
++
++class ExtraModel(BaseModel):
++    model_config = ConfigDict(extra="allow")
++    name: str
++
++def get_extra(extra: ExtraModel = Depends()):
++    return extra
++
++@app.get("/test")
++def test_endpoint(extra: ExtraModel = Depends(get_extra)):
++    return extra.model_dump()
++
++client = TestClient(app)
++
++def test_query_extra_list():
++    # Multiple values for 'extra_param'
++    response = client.get("/test?name=test&extra_param=1&extra_param=2")
++    data = response.json()
++    print(f"Response data: {data}")
++    assert data["extra_param"] == ["1", "2"], f"Expected ['1', '2'], got {data.get('extra_param')}"
++    print("test_query_extra_list passed")
++
++def test_header_extra_list():
++    # Multiple values for 'extra_header'
++    response = client.get("/test?name=test", headers={"extra_header": ["1", "2"]})
++    # Wait, TestClient headers might not support lists like this.
++    # Let's use a more reliable way to send multiple headers.
++    # Actually, TestClient uses httpx, and httpx supports multiple headers.
++    # But let's check.
++    data = response.json()
++    assert data["extra_header"] == ["1", "2"], f"Expected ['1', '2'], got {data.get('extra_header')}"
++    print("test_header_extra_list passed")
++
++if __name__ == "__main__":
++    try:
++        test_query_extra_list()
++        test_header_extra_list()
++        print("All tests passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..c9e3d342
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,42 @@
++from fastapi import FastAPI, Query
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++
++app = FastAPI()
++
++
++class Model(BaseModel):
++    param: str
++
++    model_config = {"extra": "allow"}
++
++
++@app.get("/")
++async def model_with_extra(data: Model = Query()):
++    return data
++
++
++def test_pass_extra_list():
++    client = TestClient(app)
++    resp = client.get(
++        "/",
++        params={
++            "param": "123",
++            "param2": ["456", "789"],  # Pass a list of values as extra parameter
++        },
++    )
++    assert resp.status_code == 200
++    print(f"Response JSON: {resp.json()}")
++    assert resp.json() == {
++        "param": "123",
++        "param2": ["456", "789"],
++    }
++
++if __name__ == "__main__":
++    try:
++        test_pass_extra_list()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++    except Exception as e:
++        print(f"An error occurred: {e}")

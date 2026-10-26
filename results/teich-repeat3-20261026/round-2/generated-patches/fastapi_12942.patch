@@ -1,0 +1,114 @@
+diff --git a/fastapi/_compat.py b/fastapi/_compat.py
+index 8ea5bf25..1ee7ceb6 100644
+--- a/fastapi/_compat.py
++++ b/fastapi/_compat.py
+@@ -562,6 +562,7 @@ def _annotation_is_sequence(annotation: Union[Type[Any], None]) -> bool:
+ 
+ 
+ def field_annotation_is_sequence(annotation: Union[Type[Any], None]) -> bool:
++    annotation = unwrap_annotated(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         for arg in get_args(annotation):
+@@ -586,6 +587,7 @@ def _annotation_is_complex(annotation: Union[Type[Any], None]) -> bool:
+ 
+ 
+ def field_annotation_is_complex(annotation: Union[Type[Any], None]) -> bool:
++    annotation = unwrap_annotated(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         return any(field_annotation_is_complex(arg) for arg in get_args(annotation))
+@@ -621,6 +623,7 @@ def field_annotation_is_scalar_sequence(annotation: Union[Type[Any], None]) -> b
+ 
+ 
+ def is_bytes_or_nonable_bytes_annotation(annotation: Any) -> bool:
++    annotation = unwrap_annotated(annotation)
+     if lenient_issubclass(annotation, bytes):
+         return True
+     origin = get_origin(annotation)
+@@ -632,6 +635,7 @@ def is_bytes_or_nonable_bytes_annotation(annotation: Any) -> bool:
+ 
+ 
+ def is_uploadfile_or_nonable_uploadfile_annotation(annotation: Any) -> bool:
++    annotation = unwrap_annotated(annotation)
+     if lenient_issubclass(annotation, UploadFile):
+         return True
+     origin = get_origin(annotation)
+@@ -643,6 +647,7 @@ def is_uploadfile_or_nonable_uploadfile_annotation(annotation: Any) -> bool:
+ 
+ 
+ def is_bytes_sequence_annotation(annotation: Any) -> bool:
++    annotation = unwrap_annotated(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         at_least_one = False
+@@ -658,6 +663,7 @@ def is_bytes_sequence_annotation(annotation: Any) -> bool:
+ 
+ 
+ def is_uploadfile_sequence_annotation(annotation: Any) -> bool:
++    annotation = unwrap_annotated(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         at_least_one = False
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..09eb9685
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,56 @@
++from typing import Any, Literal, Annotated
++from pydantic import BaseModel, Field, Discriminator, Tag
++from fastapi import FastAPI, Body
++from fastapi.params import Body as FastAPIBody
++from fastapi.testclient import TestClient
++
++class Pie(BaseModel):
++    time_to_cook: int
++    num_ingredients: int
++
++class ApplePie(Pie):
++    fruit: Literal["apple"] = "apple"
++
++class PumpkinPie(Pie):
++    filling: Literal["pumpkin"] = "pumpkin"
++
++def get_discriminator_value(v: Any) -> str:
++    if isinstance(v, dict):
++        return v.get("fruit", v.get("filling"))
++    return getattr(v, "fruit", getattr(v, "filling", None))
++
++Dessert = Annotated[
++    Annotated[ApplePie, Tag("apple")] | Annotated[PumpkinPie, Tag("pumpkin")],
++    Discriminator(get_discriminator_value),
++]
++
++app = FastAPI()
++
++@app.post("/dessert")
++async def dinner(dessert: Dessert) -> dict[str, Any]:
++    return dessert.model_dump()
++
++client = TestClient(app)
++
++def test_dessert_endpoint():
++    # Test ApplePie
++    response = client.post("/dessert", json={"time_to_cook": 60, "num_ingredients": 5, "fruit": "apple"})
++    print(f"ApplePie response: {response.status_code}, {response.json()}")
++    assert response.status_code == 200
++    assert response.json()["fruit"] == "apple"
++
++    # Test PumpkinPie
++    response = client.post("/dessert", json={"time_to_cook": 90, "num_ingredients": 8, "filling": "pumpkin"})
++    print(f"PumpkinPie response: {response.status_code}, {response.json()}")
++    assert response.status_code == 200
++    assert response.json()["filling"] == "pumpkin"
++
++if __name__ == "__main__":
++    try:
++        test_dessert_endpoint()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

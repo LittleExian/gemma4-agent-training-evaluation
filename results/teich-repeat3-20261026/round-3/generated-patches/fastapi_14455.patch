@@ -1,0 +1,85 @@
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index dbc93d28..54fea3e4 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -280,7 +280,7 @@ def get_openapi_path(
+             if operation_security:
+                 operation.setdefault("security", []).extend(operation_security)
+             if security_definitions:
+-                security_schemes.update(security_definitions)
++                deep_dict_update(security_schemes, security_definitions)
+             operation_parameters = _get_openapi_operation_parameters(
+                 dependant=route.dependant,
+                 model_name_map=model_name_map,
+@@ -520,8 +520,8 @@ def get_openapi(
+                 if path:
+                     paths.setdefault(route.path_format, {}).update(path)
+                 if security_schemes:
+-                    components.setdefault("securitySchemes", {}).update(
+-                        security_schemes
++                    deep_dict_update(
++                        components.setdefault("securitySchemes", {}), security_schemes
+                     )
+                 if path_definitions:
+                     definitions.update(path_definitions)
+@@ -539,8 +539,8 @@ def get_openapi(
+                 if path:
+                     webhook_paths.setdefault(webhook.path_format, {}).update(path)
+                 if security_schemes:
+-                    components.setdefault("securitySchemes", {}).update(
+-                        security_schemes
++                    deep_dict_update(
++                        components.setdefault("securitySchemes", {}), security_schemes
+                     )
+                 if path_definitions:
+                     definitions.update(path_definitions)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..19138a1f
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,44 @@
++from fastapi import FastAPI, Depends
++from fastapi.openapi.utils import get_openapi
++from fastapi.security import OAuth2PasswordBearer
++import json
++
++app = FastAPI()
++
++# Two different OAuth2PasswordBearer instances with the same scheme_name but different scopes
++oauth2_scheme1 = OAuth2PasswordBearer(
++    tokenUrl='token',
++    scopes={'scope1': 'Scope 1'},
++    scheme_name='oauth2_scheme'
++)
++oauth2_scheme2 = OAuth2PasswordBearer(
++    tokenUrl='token',
++    scopes={'scope2': 'Scope 2'},
++    scheme_name='oauth2_scheme'
++)
++
++@app.get('/test1', dependencies=[Depends(oauth2_scheme1)])
++def test1():
++    return {'msg': 'test1'}
++
++@app.get('/test2', dependencies=[Depends(oauth2_scheme2)])
++def test2():
++    return {'msg': 'test2'}
++
++openapi_schema = get_openapi(
++    title='Test',
++    version='1.0.0',
++    routes=app.routes,
++)
++
++security_schemes = openapi_schema['components']['securitySchemes']['oauth2_scheme']
++scopes = security_schemes['flows']['password']['scopes']
++
++print(json.dumps(scopes, indent=2))
++
++# Check if both scopes are present
++if 'scope1' in scopes and 'scope2' in scopes:
++    print('SUCCESS: Both scopes are present')
++else:
++    print('FAILURE: One or more scopes are missing')
++    exit(1)

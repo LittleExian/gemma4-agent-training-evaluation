@@ -1,0 +1,92 @@
+diff --git a/fastapi/responses.py b/fastapi/responses.py
+index 5b1154c0..3c65ac9e 100644
+--- a/fastapi/responses.py
++++ b/fastapi/responses.py
+@@ -82,3 +82,56 @@ class ORJSONResponse(JSONResponse):
+         return orjson.dumps(
+             content, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY
+         )
++
++
++def sse_format(
++    data: Any,
++    event: str | None = None,
++    id: str | None = None,
++    retry: int | None = None,
++) -> str:
++    """Format a message as a Server-Sent Event (SSE)."""
++    lines = []
++    if id is not None:
++        lines.append(f"id: {id}")
++    if event is not None:
++        lines.append(f"event: {event}")
++    if retry is not None:
++        lines.append(f"retry: {retry}")
++
++    if isinstance(data, str):
++        for line in data.split("\n"):
++            lines.append(f"data: {line}")
++    else:
++        lines.append(f"data: {data}")
++
++    return "\n".join(lines) + "\n\n"
++
++
++class SSEResponse(StreamingResponse):
++    """SSE response.
++
++    **Note**: The content must be an async generator or an iterator that yields
++    strings or bytes. Each yielded item should be a properly formatted SSE
++    message, e.g. `data: my message\n\n`.
++    """
++
++    def __init__(
++        self,
++        content: Any,
++        status_code: int = 200,
++        headers: dict[str, str] | None = None,
++        background: Any = None,
++        media_type: str = "text/event-stream",
++    ) -> None:
++        if headers is None:
++            headers = {}
++        headers["Cache-Control"] = "no-cache"
++        headers["Connection"] = "keep-alive"
++        super().__init__(
++            content=content,
++            status_code=status_code,
++            headers=headers,
++            background=background,
++            media_type=media_type,
++        )
+diff --git a/verify_sse.py b/verify_sse.py
+new file mode 100644
+index 00000000..d2458327
+--- /dev/null
++++ b/verify_sse.py
+@@ -0,0 +1,25 @@
++from fastapi.responses import sse_format, SSEResponse
++from starlette.responses import StreamingResponse
++
++def test_sse_format():
++    assert sse_format("hello") == "data: hello\n\n"
++    assert sse_format("hello\nworld") == "data: hello\ndata: world\n\n"
++    assert sse_format("hello", event="test") == "event: test\ndata: hello\n\n"
++    assert sse_format("hello", id="1") == "id: 1\ndata: hello\n\n"
++    assert sse_format("hello", retry=1000) == "retry: 1000\ndata: hello\n\n"
++    assert sse_format("hello", event="test", id="1", retry=1000) == "id: 1\nevent: test\nretry: 1000\ndata: hello\n\n"
++    print("sse_format tests passed!")
++
++def test_sse_response():
++    async def content_gen():
++        yield "data: hello\n\n"
++    
++    response = SSEResponse(content_gen())
++    assert response.media_type == "text/event-stream"
++    assert response.headers["Cache-Control"] == "no-cache"
++    assert response.headers["Connection"] == "keep-alive"
++    print("SSEResponse tests passed!")
++
++if __name__ == "__main__":
++    test_sse_format()
++    test_sse_response()

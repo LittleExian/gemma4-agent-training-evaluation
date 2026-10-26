@@ -1,0 +1,109 @@
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index dbc93d28..2c78fa55 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -81,13 +81,32 @@ def get_openapi_security_definitions(
+     security_definitions = {}
+     operation_security = []
+     for security_requirement in flat_dependant.security_requirements:
++        security_name = security_requirement.security_scheme.scheme_name
+         security_definition = jsonable_encoder(
+             security_requirement.security_scheme.model,
+             by_alias=True,
+             exclude_none=True,
+         )
+-        security_name = security_requirement.security_scheme.scheme_name
+-        security_definitions[security_name] = security_definition
++        if security_name in security_definitions:
++            existing_definition = security_definitions[security_name]
++            if (
++                existing_definition.get("type") == "oauth2"
++                and security_definition.get("type") == "oauth2"
++            ):
++                existing_flows = existing_definition.get("flows", {})
++                new_flows = security_definition.get("flows", {})
++                for flow_name, flow_def in new_flows.items():
++                    if flow_name in existing_flows:
++                        existing_flows[flow_name].setdefault("scopes", {}).update(
++                            flow_def.get("scopes", {})
++                        )
++                    else:
++                        existing_flows[flow_name] = flow_def
++                existing_definition["flows"] = existing_flows
++            else:
++                security_definitions[security_name] = security_definition
++        else:
++            security_definitions[security_name] = security_definition
+         operation_security.append({security_name: security_requirement.scopes})
+     return security_definitions, operation_security
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..f6a577fa
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,64 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer
++from fastapi.openapi.utils import get_openapi_security_definitions
++from fastapi.dependencies.models import Dependant
++from fastapi.openapi.models import OAuth2 as OAuth2Model
++from pydantic import BaseModel
++
++# Mock Dependant and security_requirement
++class MockSecurityRequirement:
++    def __init__(self, scheme, scopes):
++        self.security_scheme = scheme
++        self.scopes = scopes
++
++class MockDependant:
++    def __init__(self, security_requirements):
++        self.security_requirements = security_requirements
++
++# Mock SecurityScheme
++class MockSecurityScheme:
++    def __init__(self, model, scheme_name):
++        self.model = model
++        self.scheme_name = scheme_name
++
++# Mock OAuth2 model
++class MockOAuth2Model:
++    def __init__(self, flows, description=None):
++        self.flows = flows
++        self.description = description
++
++# We need to use the actual OAuth2 model from fastapi.openapi.models for jsonable_encoder to work as expected
++# but let's just use dicts for now if we can, or the actual models.
++
++from fastapi.openapi.models import OAuthFlows, OAuthFlowPassword
++
++# Create two OAuth2 schemes with the same name but different scopes
++flows1 = OAuthFlows(password=OAuthFlowPassword(tokenUrl="http://token", scopes={"read": "read items"}))
++flows2 = OAuthFlows(password=OAuthFlowPassword(tokenUrl="http://token", scopes={"write": "write items"}))
++
++scheme1 = MockSecurityScheme(OAuth2Model(flows=flows1), "OAuth2")
++scheme2 = MockSecurityScheme(OAuth2Model(flows=flows2), "OAuth2")
++
++req1 = MockSecurityRequirement(scheme1, ["read"])
++req2 = MockSecurityRequirement(scheme2, ["write"])
++
++dependant = MockDependant([req1, req2])
++
++security_definitions, operation_security = get_openapi_security_definitions(dependant)
++
++print("Security Definitions:")
++import pprint
++pprint.pprint(security_definitions)
++print("\nOperation Security:")
++pprint.pprint(operation_security)
++
++# Check if scopes are merged
++oauth2_def = security_definitions.get("OAuth2")
++if oauth2_def and "flows" in oauth2_def and "password" in oauth2_def["flows"]:
++    scopes = oauth2_def["flows"]["password"].get("scopes", {})
++    if "read" in scopes and "write" in scopes:
++        print("\nSUCCESS: Scopes are merged")
++    else:
++        print(f"\nFAILURE: Scopes are not merged. Found: {scopes}")
++else:
++    print("\nFAILURE: OAuth2 definition or flows not found")

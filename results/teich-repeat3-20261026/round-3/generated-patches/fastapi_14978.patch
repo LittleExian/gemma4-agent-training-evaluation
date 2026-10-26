@@ -1,0 +1,158 @@
+diff --git a/fastapi/params.py b/fastapi/params.py
+index 68f98708..10319db1 100644
+--- a/fastapi/params.py
++++ b/fastapi/params.py
+@@ -476,6 +476,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+         annotation: Any | None = None,
+         embed: bool | None = None,
+         media_type: str = "application/json",
++        strict_content_type: bool = False,
+         alias: str | None = None,
+         alias_priority: int | None = _Unset,
+         validation_alias: str | AliasPath | AliasChoices | None = None,
+@@ -517,6 +518,7 @@ class Body(FieldInfo):  # type: ignore[misc]
+     ):
+         self.embed = embed
+         self.media_type = media_type
++        self.strict_content_type = strict_content_type
+         if example is not _Unset:
+             warnings.warn(
+                 "`example` has been deprecated, please use `examples` instead",
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 528c9629..9ab3f2cb 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -64,6 +64,7 @@ from starlette import routing
+ from starlette._exception_handler import wrap_app_handling_exceptions
+ from starlette._utils import is_async_callable
+ from starlette.concurrency import run_in_threadpool
++from starlette import status
+ from starlette.exceptions import HTTPException
+ from starlette.requests import Request
+ from starlette.responses import JSONResponse, Response
+@@ -333,6 +334,11 @@ def get_request_handler(
+     assert dependant.call is not None, "dependant.call must be a function"
+     is_coroutine = dependant.is_coroutine_callable
+     is_body_form = body_field and isinstance(body_field.field_info, params.Form)
++    strict_content_type = False
++    media_type = "application/json"
++    if body_field and isinstance(body_field.field_info, params.Body):
++        strict_content_type = body_field.field_info.strict_content_type
++        media_type = body_field.field_info.media_type
+     if isinstance(response_class, DefaultPlaceholder):
+         actual_response_class: type[Response] = response_class.value
+     else:
+@@ -370,13 +376,33 @@ def get_request_handler(
+                         json_body: Any = Undefined
+                         content_type_value = request.headers.get("content-type")
+                         if not content_type_value:
++                            if strict_content_type:
++                                raise HTTPException(
++                                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
++                                    detail=f"Content-Type must be {media_type}",
++                                )
+                             json_body = await request.json()
+                         else:
+                             message = email.message.Message()
+                             message["content-type"] = content_type_value
+-                            if message.get_content_maintype() == "application":
+-                                subtype = message.get_content_subtype()
+-                                if subtype == "json" or subtype.endswith("+json"):
++                            content_type = message.get_content_type()
++                            if strict_content_type:
++                                if content_type != media_type:
++                                    raise HTTPException(
++                                        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
++                                        detail=f"Content-Type must be {media_type}",
++                                    )
++                                if media_type == "application/json" or media_type.endswith("+json"):
++                                    json_body = await request.json()
++                            else:
++                                if media_type == "application/json":
++                                    if message.get_content_maintype() == "application":
++                                        subtype = message.get_content_subtype()
++                                        if subtype == "json" or subtype.endswith("+json"):
++                                            json_body = await request.json()
++                                elif content_type == media_type and (
++                                    media_type == "application/json" or media_type.endswith("+json")
++                                ):
+                                     json_body = await request.json()
+                         if json_body != Undefined:
+                             body = json_body
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..4e39ffe9
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,71 @@
++from fastapi import FastAPI, Body, HTTPException
++from fastapi.testclient import TestClient
++import pytest
++import json
++
++app = FastAPI()
++
++@app.post("/strict", status_code=200)
++async def strict_endpoint(body: dict = Body(..., strict_content_type=True, media_type="application/json")):
++    return body
++
++@app.post("/flexible", status_code=200)
++async def flexible_endpoint(body: dict = Body(..., strict_content_type=False, media_type="application/json")):
++    return body
++
++@app.post("/problem", status_code=200)
++async def problem_endpoint(body: dict = Body(..., strict_content_type=True, media_type="application/problem+json")):
++    return body
++
++client = TestClient(app)
++
++def test_strict_json_ok():
++    response = client.post("/strict", json={"a": 1}, headers={"Content-Type": "application/json"})
++    assert response.status_code == 200
++    assert response.json() == {"a": 1}
++
++def test_strict_json_fail_problem():
++    response = client.post("/strict", json={"a": 1}, headers={"Content-Type": "application/problem+json"})
++    assert response.status_code == 415
++    assert response.json()["detail"] == "Content-Type must be application/json"
++
++def test_strict_json_fail_missing():
++    response = client.post("/strict", content=json.dumps({"a": 1}), headers={})
++    assert response.status_code == 415
++    assert response.json()["detail"] == "Content-Type must be application/json"
++
++def test_flexible_json_ok():
++    response = client.post("/flexible", json={"a": 1}, headers={"Content-Type": "application/json"})
++    assert response.status_code == 200
++    assert response.json() == {"a": 1}
++
++def test_flexible_json_ok_problem():
++    response = client.post("/flexible", json={"a": 1}, headers={"Content-Type": "application/problem+json"})
++    assert response.status_code == 200
++    assert response.json() == {"a": 1}
++
++def test_flexible_json_ok_missing():
++    response = client.post("/flexible", json={"a": 1}, headers={})
++    assert response.status_code == 200
++    assert response.json() == {"a": 1}
++
++def test_problem_ok():
++    response = client.post("/problem", json={"a": 1}, headers={"Content-Type": "application/problem+json"})
++    assert response.status_code == 200
++    assert response.json() == {"a": 1}
++
++def test_problem_fail_json():
++    response = client.post("/problem", json={"a": 1}, headers={"Content-Type": "application/json"})
++    assert response.status_code == 415
++    assert response.json()["detail"] == "Content-Type must be application/problem+json"
++
++if __name__ == "__main__":
++    test_strict_json_ok()
++    test_strict_json_fail_problem()
++    test_strict_json_fail_missing()
++    test_flexible_json_ok()
++    test_flexible_json_ok_problem()
++    test_flexible_json_ok_missing()
++    test_problem_ok()
++    test_problem_fail_json()
++    print("All tests passed!")

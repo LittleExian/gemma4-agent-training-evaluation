@@ -1,0 +1,183 @@
+diff --git a/fastapi/applications.py b/fastapi/applications.py
+index c7c551e4e..5331fedb9 100644
+--- a/fastapi/applications.py
++++ b/fastapi/applications.py
+@@ -4,6 +4,7 @@ from typing import Annotated, Any, TypeVar
+ 
+ from annotated_doc import Doc
+ from fastapi import routing
++from fastapi.staticfiles import StaticFiles
+ from fastapi.datastructures import Default, DefaultPlaceholder
+ from fastapi.exception_handlers import (
+     http_exception_handler,
+@@ -1563,6 +1564,49 @@ class FastAPI(Starlette):
+             generate_unique_id_function=generate_unique_id_function,
+         )
+ 
++    def frontend(
++        self,
++        path: Annotated[
++            str,
++            Doc(
++                """
++                The URL path to be used for the frontend application.
++
++                For example, in `http://example.com/`, the path is `/`.
++                """
++            ),
++        ],
++        *,
++        directory: Annotated[
++            str,
++            Doc(
++                """
++                The directory where the frontend application is located.
++                """
++            ),
++        ],
++    ) -> None:
++        """
++        Mount a frontend application as static files.
++
++        This is a shortcut for `mount()` using `StaticFiles`.
++
++        ## Example
++
++        ```python
++        from fastapi import FastAPI
++
++        app = FastAPI()
++
++        app.frontend("/", directory="dist")
++        ```
++        """
++        self.mount(
++            path,
++            StaticFiles(directory=directory, html=True),
++            name="frontend",
++        )
++
+     def get(
+         self,
+         path: Annotated[
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 4a55fda8a..9d2c9e403 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -77,6 +77,7 @@ from fastapi.utils import (
+     is_body_allowed_for_status_code,
+ )
+ from starlette import routing
++from starlette.staticfiles import StaticFiles
+ from starlette._exception_handler import wrap_app_handling_exceptions
+ from starlette._utils import get_route_path, is_async_callable
+ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
+@@ -5691,3 +5692,46 @@ class APIRouter(routing.Router):
+             return func
+ 
+         return decorator
++
++    def frontend(
++        self,
++        path: Annotated[
++            str,
++            Doc(
++                """
++                The URL path to be used for the frontend application.
++
++                For example, in `http://example.com/`, the path is `/`.
++                """
++            ),
++        ],
++        *,
++        directory: Annotated[
++            str,
++            Doc(
++                """
++                The directory where the frontend application is located.
++                """
++            ),
++        ],
++    ) -> None:
++        """
++        Mount a frontend application as static files.
++
++        This is a shortcut for `mount()` using `StaticFiles`.
++
++        ## Example
++
++        ```python
++        from fastapi import APIRouter
++
++        router = APIRouter()
++
++        router.frontend("/", directory="dist")
++        ```
++        """
++        self.mount(
++            path,
++            StaticFiles(directory=directory, html=True),
++            name="frontend",
++        )
+diff --git a/test_dist_router/index.html b/test_dist_router/index.html
+new file mode 100644
+index 000000000..ff40a9ed2
+--- /dev/null
++++ b/test_dist_router/index.html
+@@ -0,0 +1 @@
++Hello APIRouter Frontend
+\ No newline at end of file
+diff --git a/verify_frontend.py b/verify_frontend.py
+new file mode 100644
+index 000000000..53ddb2581
+--- /dev/null
++++ b/verify_frontend.py
+@@ -0,0 +1,48 @@
++
++import os
++import shutil
++from fastapi import FastAPI, APIRouter
++from fastapi.testclient import TestClient
++from starlette.staticfiles import StaticFiles
++
++def test_fastapi_frontend():
++    app = FastAPI()
++    dist_dir = "test_dist"
++    os.makedirs(dist_dir, exist_ok=True)
++    with open(os.path.join(dist_dir, "index.html"), "w") as f:
++        f.write("Hello FastAPI Frontend")
++    
++    app.frontend("/", directory=dist_dir)
++    
++    client = TestClient(app)
++    response = client.get("/")
++    print(f"FastAPI: status_code={response.status_code}, text={response.text}")
++    assert response.status_code == 200
++    assert response.text == "Hello FastAPI Frontend"
++    
++    shutil.rmtree(dist_dir)
++    print("test_fastapi_frontend passed")
++
++def test_apirouter_frontend():
++    app = FastAPI()
++    router = APIRouter(prefix="/api")
++    dist_dir = "test_dist_router"
++    os.makedirs(dist_dir, exist_ok=True)
++    with open(os.path.join(dist_dir, "index.html"), "w") as f:
++        f.write("Hello APIRouter Frontend")
++    
++    router.frontend("/", directory=dist_dir)
++    app.include_router(router)
++    
++    client = TestClient(app)
++    # The path should be /api/ because of the prefix and the path in frontend
++    response = client.get("/api/")
++    assert response.status_code == 200
++    assert response.text == "Hello APIRouter Frontend"
++    
++    shutil.rmtree(dist_dir)
++    print("test_apirouter_frontend passed")
++
++if __name__ == "__main__":
++    test_fastapi_frontend()
++    test_apirouter_frontend()

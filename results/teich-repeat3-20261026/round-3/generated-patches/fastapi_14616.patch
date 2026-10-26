@@ -1,0 +1,135 @@
+diff --git a/check_annotation.py b/check_annotation.py
+new file mode 100644
+index 00000000..d4ba611a
+--- /dev/null
++++ b/check_annotation.py
+@@ -0,0 +1,13 @@
++from pydantic import Json
++from typing import List, Annotated
++from fastapi._compat.shared import field_annotation_is_sequence
++
++# In Pydantic v2, Json[List[str]] is Annotated[List[str], Json]
++annotation = Json[List[str]]
++print(f"Annotation: {annotation}")
++print(f"field_annotation_is_sequence(annotation): {field_annotation_is_sequence(annotation)}")
++
++# Let's see what happens if we use Annotated[List[str], Json]
++annotation2 = Annotated[List[str], Json]
++print(f"Annotation2: {annotation2}")
++print(f"field_annotation_is_sequence(annotation2): {field_annotation_is_sequence(annotation2)}")
+diff --git a/check_field_info.py b/check_field_info.py
+new file mode 100644
+index 00000000..35cb15b1
+--- /dev/null
++++ b/check_field_info.py
+@@ -0,0 +1,38 @@
++from fastapi import FastAPI, Form
++from pydantic import Json
++from typing import List
++from pydantic.fields import FieldInfo
++from fastapi._compat.v2 import is_sequence_field
++from fastapi._compat.shared import field_annotation_is_sequence
++
++app = FastAPI()
++
++@app.post("/test")
++async def test(data: Json[List[str]] = Form()):
++    return data
++
++# Let's find the field info for 'data'
++# We can get it from the endpoint's dependencies
++endpoint = app.router.routes[0].endpoint
++# The dependencies are in endpoint.dependencies
++# But wait, the parameters are in endpoint.__defaults__ or something.
++# Actually, FastAPI stores them in the endpoint's function signature.
++
++import inspect
++sig = inspect.signature(endpoint)
++# But FastAPI's dependency injection happens at runtime.
++
++# Let's just use a dummy FieldInfo and see what happens.
++# In Pydantic v2, when we have `data: Json[List[str]] = Form()`,
++# the annotation is `Json[List[str]]`.
++
++annotation = Json[List[str]]
++print(f"Annotation: {annotation}")
++print(f"field_annotation_is_sequence(annotation): {field_annotation_is_sequence(annotation)}")
++
++# Let's see what Pydantic v2 does with it.
++from pydantic import create_model
++Model = create_model("Model", data=(Json[List[str]], ...))
++field = Model.model_fields["data"]
++print(f"Field annotation: {field.annotation}")
++print(f"is_sequence_field(field): {is_sequence_field(field)}")
+diff --git a/check_metadata.py b/check_metadata.py
+new file mode 100644
+index 00000000..1eebaf6b
+--- /dev/null
++++ b/check_metadata.py
+@@ -0,0 +1,8 @@
++from pydantic import Json
++from typing import List
++from pydantic import create_model
++
++Model = create_model("Model", data=(Json[List[str]], ...))
++field = Model.model_fields["data"]
++print(f"Field annotation: {field.annotation}")
++print(f"Field metadata: {field.metadata}")
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index dae78a32..49da7d59 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -15,7 +15,7 @@ from typing import (
+ from fastapi._compat import shared
+ from fastapi.openapi.constants import REF_TEMPLATE
+ from fastapi.types import IncEx, ModelNameMap, UnionType
+-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
++from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, Json
+ from pydantic import PydanticSchemaGenerationError as PydanticSchemaGenerationError
+ from pydantic import PydanticUndefinedAnnotation as PydanticUndefinedAnnotation
+ from pydantic import ValidationError as ValidationError
+@@ -404,6 +404,8 @@ def is_scalar_field(field: ModelField) -> bool:
+ 
+ 
+ def is_sequence_field(field: ModelField) -> bool:
++    if Json in field.field_info.metadata:
++        return False
+     return shared.field_annotation_is_sequence(field.field_info.annotation)
+ 
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..c9dd25a4
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,30 @@
++from fastapi import FastAPI, Form
++from pydantic import Json
++from typing import List
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++@app.post("/test")
++async def test(data: Json[List[str]] = Form()):
++    return {"data": data}
++
++client = TestClient(app)
++
++def test_json_form():
++    # The input is a JSON string representing a list of strings
++    json_string = '["abc", "def"]'
++    # We send it as a form field
++    response = client.post("/test", data={"data": json_string})
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json()["data"] == ["abc", "def"]
++
++if __name__ == "__main__":
++    try:
++        test_json_form()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()

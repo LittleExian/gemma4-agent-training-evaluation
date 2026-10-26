@@ -1,0 +1,74 @@
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..6212eb62
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,68 @@
++
++from fastapi import FastAPI, Body
++from typing import Literal, Union, Annotated
++from pydantic import BaseModel, Field
++from fastapi.testclient import TestClient
++import json
++
++app = FastAPI()
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++@app.post("/pets")
++async def create_pet(pet: Annotated[Pet, Body()]):
++    return pet
++
++client = TestClient(app)
++
++def test_tagged_union_body():
++    # Test Cat
++    response = client.post("/pets", json={"type": "cat", "meows": True})
++    assert response.status_code == 200
++    assert response.json() == {"type": "cat", "meows": True}
++
++    # Test Dog
++    response = client.post("/pets", json={"type": "dog", "barks": True})
++    assert response.status_code == 200
++    assert response.json() == {"type": "dog", "barks": True}
++
++    # Test invalid type
++    response = client.post("/pets", json={"type": "bird", "wings": True})
++    assert response.status_code == 422
++
++def test_openapi_schema():
++    schema = app.openapi()
++    # Find the /pets post operation
++    paths = schema["paths"]["/pets"]["post"]
++    request_body = paths["requestBody"]["content"]["application/json"]["schema"]
++    
++    # The schema should have a discriminator
++    # In Pydantic v2, it might be in 'discriminator' field of the schema
++    # or it might be a oneOf with a discriminator.
++    
++    # Let's print the schema to see what it looks like
++    print(json.dumps(request_body, indent=2))
++    
++    # We expect a discriminator to be present
++    assert "discriminator" in request_body, "Discriminator missing from OpenAPI schema"
++    assert request_body["discriminator"]["propertyName"] == "type"
++
++if __name__ == "__main__":
++    try:
++        test_tagged_union_body()
++        print("Validation tests passed!")
++        test_openapi_schema()
++        print("OpenAPI tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

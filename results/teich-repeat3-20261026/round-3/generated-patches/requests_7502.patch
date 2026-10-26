@@ -1,0 +1,123 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..cceb829c
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,30 @@
++
++from requests._types import SupportsRead
++
++class FileWrapper:
++    def __init__(self, fileobj):
++        self.fileobj = fileobj
++    def __getattr__(self, name):
++        return getattr(self.fileobj, name)
++
++class MockFile:
++    def read(self, length=None):
++        return b"data"
++
++class NotAFile:
++    def __init__(self):
++        self.read = "not a function"
++
++mock_file = MockFile()
++wrapper = FileWrapper(mock_file)
++not_a_file = NotAFile()
++
++print(f"MockFile is SupportsRead: {isinstance(mock_file, SupportsRead)}")
++print(f"FileWrapper is SupportsRead: {isinstance(wrapper, SupportsRead)}")
++print(f"MockFile has read: {hasattr(mock_file, 'read')}")
++print(f"FileWrapper has read: {hasattr(wrapper, 'read')}")
++print(f"NotAFile has read: {hasattr(not_a_file, 'read')}")
++
++print(f"MockFile read is callable: {callable(getattr(mock_file, 'read', None))}")
++print(f"FileWrapper read is callable: {callable(getattr(wrapper, 'read', None))}")
++print(f"NotAFile read is callable: {callable(getattr(not_a_file, 'read', None))}")
+diff --git a/src/requests/models.py b/src/requests/models.py
+index c4cc028e..fec28351 100644
+--- a/src/requests/models.py
++++ b/src/requests/models.py
+@@ -36,7 +36,6 @@ from urllib3.filepost import encode_multipart_formdata
+ from urllib3.util import parse_url
+ 
+ from ._internal_utils import to_native_string, unicode_is_ascii
+-from ._types import SupportsRead as _SupportsRead
+ from .auth import HTTPBasicAuth
+ from .compat import (
+     JSONDecodeError,
+@@ -161,7 +160,7 @@ class RequestEncodingMixin:
+ 
+         if isinstance(data, (str, bytes)):
+             return data
+-        elif isinstance(data, _SupportsRead):
++        elif callable(getattr(data, "read", None)):
+             return data
+         elif hasattr(data, "__iter__"):
+             result: list[tuple[bytes, bytes]] = []
+@@ -236,7 +235,7 @@ class RequestEncodingMixin:
+ 
+             if isinstance(fp, (str, bytes, bytearray)):
+                 fdata = fp
+-            elif isinstance(fp, _SupportsRead):  # defensive check for untyped callers
++            elif callable(getattr(fp, "read", None)):  # defensive check for untyped callers
+                 fdata = fp.read()
+             elif fp is None:  # defensive check for untyped callers
+                 continue
+@@ -639,7 +638,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+             else:
+                 if raw_data:
+                     body = self._encode_params(raw_data)
+-                    if isinstance(data, basestring) or isinstance(data, _SupportsRead):
++                    if isinstance(data, basestring) or callable(getattr(data, "read", None)):
+                         content_type = None
+                     else:
+                         content_type = "application/x-www-form-urlencoded"
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..0fe57269
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,42 @@
++import requests
++from requests.models import RequestEncodingMixin, PreparedRequest
++from requests.structures import CaseInsensitiveDict
++from io import BytesIO
++
++class FileWrapper:
++    def __init__(self, content):
++        self._content = BytesIO(content)
++    def __getattr__(self, name):
++        return getattr(self._content, name)
++
++def test_encode_files_with_getattr_wrapper():
++    # We need a class that inherits from RequestEncodingMixin and has a url
++    class MockRequest(RequestEncodingMixin):
++        def __init__(self, url):
++            self.url = url
++        def prepare_body(self, data, files):
++            # This is a simplified version of what PreparedRequest.prepare_body does
++            # but we want to test _encode_files specifically.
++            # In requests, _encode_files is a static method of RequestEncodingMixin.
++            return self._encode_files(files, data)
++
++    files = {"file": FileWrapper(b"hello world")}
++    data = {}
++    # _encode_files is a static method of RequestEncodingMixin
++    # It returns (body, content_type)
++    body, content_type = RequestEncodingMixin._encode_files(files, data)
++    
++    # If it worked, the content should be read from the FileWrapper
++    # and put into the body.
++    assert b"hello world" in body, f"Expected b'hello world' in body, got {body}"
++    print("Body contains content!")
++
++if __name__ == "__main__":
++    try:
++        test_encode_files_with_getattr_wrapper()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

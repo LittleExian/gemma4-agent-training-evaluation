@@ -1,0 +1,116 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..75441767
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,18 @@
++from rich.cells import cell_len
++
++def test_cell_len(text, expected):
++    actual = cell_len(text)
++    print(f"text={text!r}, expected={expected}, actual={actual}, {'OK' if actual == expected else 'FAIL'}")
++
++# ZWJ is \u200d
++# A character with width 0: \u0300 (Combining Grave Accent)
++# A character with width 1: A
++# A character with width 2: 👨 (U+1F468)
++
++print("Testing ZWJ sequences:")
++test_cell_len("A\u200dB", 1) # A (1) + ZWJ + B (1) -> 1
++test_cell_len("👨\u200d👩", 2) # 👨 (2) + ZWJ + 👩 (2) -> 2
++test_cell_len("\u0300\u200dB", 1) # \u0300 (0) + ZWJ + B (1) -> 1?
++test_cell_len("A\u200d\u0300", 1) # A (1) + ZWJ + \u0300 (0) -> 1
++test_cell_len("A\u200d\u200dB", 2) # A (1) + ZWJ + ZWJ + B (1) -> 2?
++test_cell_len("A\u200dB\u200dC", 1) # A (1) + ZWJ + B (1) + ZWJ + C (1) -> 1
+diff --git a/reproduce_bug.py b/reproduce_bug.py
+new file mode 100644
+index 00000000..10dabc5e
+--- /dev/null
++++ b/reproduce_bug.py
+@@ -0,0 +1,48 @@
++import rich.cells
++
++def test_case(text, expected_width, expected_graphemes_count):
++    width = rich.cells._cell_len(text, "auto")
++    spans, total_width = rich.cells.split_graphemes(text, "auto")
++    graphemes_count = len(spans)
++    
++    print(f"Text: {repr(text)}")
++    print(f"  Width: {width} (expected {expected_width}) - {'OK' if width == expected_width else 'FAIL'}")
++    print(f"  Total Width from split_graphemes: {total_width} (expected {expected_width}) - {'OK' if total_width == expected_width else 'FAIL'}")
++    print(f"  Graphemes Count: {graphemes_count} (expected {expected_graphemes_count}) - {'OK' if graphemes_count == expected_graphemes_count else 'FAIL'}")
++    print("-" * 20)
++    
++    if width != expected_width or total_width != expected_width or graphemes_count != expected_graphemes_count:
++        return False
++    return True
++
++test_cases = [
++    # Case 1: ZWJ at the start
++    ("\u200dB", 1, 1),
++    # Case 2: Width-0 character followed by ZWJ
++    ("\u0300\u200dB", 1, 1),
++    # Case 3: Multiple ZWJs
++    ("A\u200d\u200dB", 2, 2),
++    # Case 4: ZWJ followed by width-0 character
++    ("A\u200d\u0300B", 2, 2),
++    # Case 5: ZWJ followed by width-0 character, then width-1 character
++    ("A\u200d\u0300\u200dB", 2, 2),
++    # Case 6: ZWJ followed by width-1 character, then width-0 character
++    ("A\u200dB\u0300", 2, 2),
++    # Case 7: ZWJ followed by width-1 character, then ZWJ, then width-1 character
++    ("A\u200dB\u200dC", 3, 3),
++    # Case 8: ZWJ followed by width-1 character, then ZWJ, then width-0 character
++    ("A\u200dB\u200d\u0300", 2, 2),
++    # Case 9: ZWJ followed by width-1 character, then ZWJ, then width-0 character, then width-1 character
++    ("A\u200dB\u200d\u0300C", 3, 3),
++]
++
++all_passed = True
++for text, expected_width, expected_graphemes_count in test_cases:
++    if not test_case(text, expected_width, expected_graphemes_count):
++        all_passed = False
++
++if all_passed:
++    print("All test cases passed!")
++else:
++    print("Some test cases failed.")
++    exit(1)
+diff --git a/rich/cells.py b/rich/cells.py
+index 15fe7b65..0bbad34a 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -135,12 +135,14 @@ def _cell_len(text: str, unicode_version: str) -> int:
+ 
+     SPECIAL = {"\u200d", "\ufe0f"}
+ 
+-    iter_characters = iter(text)
+-
+-    for character in iter_characters:
++    index = 0
++    while index < len(text):
++        character = text[index]
++        index += 1
+         if character in SPECIAL:
+             if character == "\u200d":
+-                next(iter_characters)
++                if last_measured_character and index < len(text) and text[index] != "\u200d":
++                    index += 1
+             elif last_measured_character:
+                 total_width += last_measured_character in cell_table.narrow_to_wide
+                 last_measured_character = None
+@@ -177,10 +179,12 @@ def split_graphemes(
+         if (character := text[index]) in SPECIAL:
+             if character == "\u200d":
+                 # zero width joiner
+-                index += 2
+-                if spans:
++                if spans and index + 1 < codepoint_count and text[index + 1] != "\u200d":
++                    index += 2
+                     start, _end, cell_length = spans[-1]
+                     spans[-1] = (start, index, cell_length)
++                else:
++                    index += 1
+             elif last_measured_character:
+                 # variation selector 16
+                 index += 1

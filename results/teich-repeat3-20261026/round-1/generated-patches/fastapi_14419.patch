@@ -1,0 +1,118 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index d6359c0f..0ba76ba2 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -43,8 +43,26 @@ class Dependant:
+     path: Optional[str] = None
+     scope: Union[Literal["function", "request"], None] = None
+ 
++    @cached_property
++    def uses_scopes(self) -> bool:
++        if self.security_scopes_param_name:
++            return True
++        for security_requirement in self.security_requirements:
++            if security_requirement.scopes:
++                return True
++        for sub_dependant in self.dependencies:
++            if sub_dependant.uses_scopes:
++                return True
++        return False
++
+     @cached_property
+     def cache_key(self) -> DependencyCacheKey:
++        if not self.uses_scopes:
++            return (
++                self.call,
++                (),
++                self.computed_scope or "",
++            )
+         return (
+             self.call,
+             tuple(sorted(set(self.security_scopes or []))),
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..9c479686
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,81 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security import OAuth2PasswordBearer
++from fastapi.dependencies.models import Dependant
++from fastapi.dependencies.utils import get_dependant
++from fastapi.security.oauth2 import SecurityScopes
++
++app = FastAPI()
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
++
++def dep_no_scopes():
++    return "no scopes"
++
++def dep_with_scopes(security_scopes: SecurityScopes):
++    return f"with scopes: {security_scopes.scopes}"
++
++def dep_with_sub_no_scopes(sub=Depends(dep_no_scopes)):
++    return f"sub no scopes: {sub}"
++
++def dep_with_sub_with_scopes(sub=Depends(dep_with_scopes)):
++    return f"sub with scopes: {sub}"
++
++# We want to check if Dependant.cache_key is the same for dep_no_scopes
++# when it's used with different scopes.
++
++# Case 1: dep_no_scopes used with scopes S1
++dependant1 = get_dependant(path="p1", call=dep_no_scopes, security_scopes=["S1"])
++key1 = dependant1.cache_key
++
++# Case 2: dep_no_scopes used with scopes S2
++dependant2 = get_dependant(path="p2", call=dep_no_scopes, security_scopes=["S2"])
++key2 = dependant2.cache_key
++
++print(f"dep_no_scopes: key1={key1}, key2={key2}, same={key1 == key2}")
++
++# Case 3: dep_with_scopes used with scopes S1
++dependant3 = get_dependant(path="p3", call=dep_with_scopes, security_scopes=["S1"])
++key3 = dependant3.cache_key
++
++# Case 4: dep_with_scopes used with scopes S2
++dependant4 = get_dependant(path="p4", call=dep_with_scopes, security_scopes=["S2"])
++key4 = dependant4.cache_key
++
++print(f"dep_with_scopes: key3={key3}, key4={key4}, same={key3 == key4}")
++
++# Case 5: dep_with_sub_no_scopes used with scopes S1
++dependant5 = get_dependant(path="p5", call=dep_with_sub_no_scopes, security_scopes=["S1"])
++key5 = dependant5.cache_key
++
++# Case 6: dep_with_sub_no_scopes used with scopes S2
++dependant6 = get_dependant(path="p6", call=dep_with_sub_no_scopes, security_scopes=["S2"])
++key6 = dependant6.cache_key
++
++print(f"dep_with_sub_no_scopes: key5={key5}, key6={key6}, same={key5 == key6}")
++
++# Case 7: dep_with_sub_with_scopes used with scopes S1
++dependant7 = get_dependant(path="p7", call=dep_with_sub_with_scopes, security_scopes=["S1"])
++key7 = dependant7.cache_key
++
++# Case 8: dep_with_sub_with_scopes used with scopes S2
++dependant8 = get_dependant(path="p8", call=dep_with_sub_with_scopes, security_scopes=["S2"])
++key8 = dependant8.cache_key
++
++print(f"dep_with_sub_with_scopes: key7={key7}, key8={key8}, same={key7 == key8}")
++
++# Also check if OAuth2 scheme with scopes is handled correctly
++dependant9 = get_dependant(path="p9", call=oauth2_scheme, security_scopes=["S1"])
++key9 = dependant9.cache_key
++
++dependant10 = get_dependant(path="p10", call=oauth2_scheme, security_scopes=["S2"])
++key10 = dependant10.cache_key
++
++print(f"Security(oauth2_scheme, scopes=...): key9={key9}, key10={key10}, same={key9 == key10}")
++
++# Check if Security(oauth2_scheme, scopes=[]) is handled correctly
++dependant11 = get_dependant(path="p11", call=oauth2_scheme, security_scopes=[])
++key11 = dependant11.cache_key
++
++dependant12 = get_dependant(path="p12", call=oauth2_scheme, security_scopes=[])
++key12 = dependant12.cache_key
++
++print(f"Security(oauth2_scheme, scopes=[]): key11={key11}, key12={key12}, same={key11 == key12}")

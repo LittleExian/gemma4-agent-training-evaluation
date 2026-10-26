@@ -1,0 +1,88 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 3d91814c..bf6ef2a3 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -180,8 +180,8 @@ def get_schema_from_model_field(
+     ],
+     separate_input_output_schemas: bool = True,
+ ) -> Dict[str, Any]:
+-    override_mode: Union[Literal["validation"], None] = (
+-        None if separate_input_output_schemas else "validation"
++    override_mode: Union[Literal["serialization"], None] = (
++        None if separate_input_output_schemas else "serialization"
+     )
+     # This expects that GenerateJsonSchema was already used to generate the definitions
+     json_schema = field_mapping[(field, override_mode or field.mode)]
+@@ -204,8 +204,8 @@ def get_definitions(
+     Dict[str, Dict[str, Any]],
+ ]:
+     schema_generator = GenerateJsonSchema(ref_template=REF_TEMPLATE)
+-    override_mode: Union[Literal["validation"], None] = (
+-        None if separate_input_output_schemas else "validation"
++    override_mode: Union[Literal["serialization"], None] = (
++        None if separate_input_output_schemas else "serialization"
+     )
+     validation_fields = [field for field in fields if field.mode == "validation"]
+     serialization_fields = [field for field in fields if field.mode == "serialization"]
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..328c7991
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,56 @@
++
++from fastapi import FastAPI
++from pydantic import BaseModel, computed_field
++from fastapi.testclient import TestClient
++import json
++
++app = FastAPI()
++
++class Item(BaseModel):
++    name: str
++    price: float
++
++    @computed_field
++    @property
++    def total(self) -> float:
++        return self.price * 1.2
++
++@app.get("/item", response_model=Item)
++def get_item():
++    return Item(name="test", price=10.0)
++
++client = TestClient(app)
++
++def test_openapi_with_separate_input_output_schemas_true():
++    app.separate_input_output_schemas = True
++    app.openapi_schema = None
++    openapi_schema = app.openapi()
++    # In this case, Item should be in the schemas.
++    # Since it's a response model, it should use serialization mode.
++    # Computed fields should be present.
++    item_schema = openapi_schema["components"]["schemas"]["Item"]
++    assert "total" in item_schema["properties"], "Computed field 'total' should be present when separate_input_output_schemas=True"
++    print("Test separate_input_output_schemas=True passed")
++
++def test_openapi_with_separate_input_output_schemas_false():
++    app.separate_input_output_schemas = False
++    app.openapi_schema = None
++    openapi_schema = app.openapi()
++    # In this case, Item should be in the schemas.
++    # It should use validation mode (currently).
++    # Computed fields should be present (this is what we want to fix).
++    item_schema = openapi_schema["components"]["schemas"]["Item"]
++    assert "total" in item_schema["properties"], "Computed field 'total' should be present when separate_input_output_schemas=False"
++    print("Test separate_input_output_schemas=False passed")
++
++if __name__ == "__main__":
++    try:
++        test_openapi_with_separate_input_output_schemas_true()
++        test_openapi_with_separate_input_output_schemas_false()
++        print("All tests passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)
++    except Exception as e:
++        print(f"An error occurred: {e}")
++        exit(1)

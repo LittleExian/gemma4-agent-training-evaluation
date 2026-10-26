@@ -1,0 +1,155 @@
+diff --git a/fastapi/_compat/main.py b/fastapi/_compat/main.py
+index e5275950..a6a9a7fd 100644
+--- a/fastapi/_compat/main.py
++++ b/fastapi/_compat/main.py
+@@ -83,7 +83,7 @@ def _get_model_config(model: BaseModel) -> Any:
+ 
+ 
+ def _model_dump(
+-    model: BaseModel, mode: Literal["json", "python"] = "json", **kwargs: Any
++    model: BaseModel, mode: Literal["json", "python"] = "python", **kwargs: Any
+ ) -> Any:
+     if isinstance(model, may_v1.BaseModel):
+         from fastapi._compat import v1
+diff --git a/fastapi/encoders.py b/fastapi/encoders.py
+index 79395108..ec754986 100644
+--- a/fastapi/encoders.py
++++ b/fastapi/encoders.py
+@@ -234,7 +234,7 @@ def jsonable_encoder(
+                 encoders = {**encoders, **custom_encoder}
+         obj_dict = _model_dump(
+             obj,
+-            mode="json",
++            mode="python",
+             include=include,
+             exclude=exclude,
+             by_alias=by_alias,
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..10b16985
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,28 @@
++
++from fastapi import FastAPI
++from fastapi.encoders import jsonable_encoder
++from pydantic import BaseModel, ConfigDict
++import pytest
++
++class ArbitraryType:
++    def __init__(self, value):
++        self.value = value
++    def __repr__(self):
++        return f"ArbitraryType({self.value})"
++
++class MyModel(BaseModel):
++    model_config = ConfigDict(arbitrary_types_allowed=True)
++    name: str
++    custom: ArbitraryType
++
++def test_arbitrary_type_serialization():
++    model = MyModel(name="test", custom=ArbitraryType("value"))
++    try:
++        encoded = jsonable_encoder(model)
++        print("Encoded successfully:", encoded)
++    except Exception as e:
++        print("Encoding failed:", e)
++        raise e
++
++if __name__ == "__main__":
++    test_arbitrary_type_serialization()
+diff --git a/reproduce_issue_dep.py b/reproduce_issue_dep.py
+new file mode 100644
+index 00000000..a5e6d81f
+--- /dev/null
++++ b/reproduce_issue_dep.py
+@@ -0,0 +1,27 @@
++from fastapi import FastAPI, Depends
++from pydantic import BaseModel, ConfigDict
++from fastapi.testclient import TestClient
++
++class ArbitraryType:
++    def __init__(self, value: str):
++        self.value = value
++    def __repr__(self):
++        return f"ArbitraryType({self.value})"
++
++def get_arbitrary_type():
++    return ArbitraryType("test")
++
++app = FastAPI()
++
++@app.get("/test")
++async def test_endpoint(item: ArbitraryType = Depends(get_arbitrary_type)):
++    return {"item": str(item)}
++
++client = TestClient(app)
++
++def test_arbitrary_type_dependency():
++    response = client.get("/test")
++    print(f"Response: {response.status_code}, {response.json()}")
++
++if __name__ == "__main__":
++    test_arbitrary_type_dependency()
+diff --git a/reproduce_issue_resp.py b/reproduce_issue_resp.py
+new file mode 100644
+index 00000000..cb2f585d
+--- /dev/null
++++ b/reproduce_issue_resp.py
+@@ -0,0 +1,28 @@
++from fastapi import FastAPI
++from pydantic import BaseModel, ConfigDict
++from fastapi.testclient import TestClient
++
++class ArbitraryType:
++    def __init__(self, value: str):
++        self.value = value
++    def __repr__(self):
++        return f"ArbitraryType({self.value})"
++
++class Model(BaseModel):
++    model_config = ConfigDict(arbitrary_types_allowed=True)
++    item: ArbitraryType
++
++app = FastAPI()
++
++@app.get("/test")
++async def test_endpoint():
++    return Model(item=ArbitraryType("test"))
++
++client = TestClient(app)
++
++def test_arbitrary_type_response():
++    response = client.get("/test")
++    print(f"Response: {response.status_code}, {response.json()}")
++
++if __name__ == "__main__":
++    test_arbitrary_type_response()
+diff --git a/search_model_dump.py b/search_model_dump.py
+new file mode 100644
+index 00000000..55bc8231
+--- /dev/null
++++ b/search_model_dump.py
+@@ -0,0 +1,11 @@
++
++import os
++
++for root, dirs, files in os.walk("fastapi"):
++    for file in files:
++        if file.endswith(".py"):
++            path = os.path.join(root, file)
++            with open(path, "r") as f:
++                for i, line in enumerate(f):
++                    if "_model_dump" in line:
++                        print(f"{path}:{i+1}: {line.strip()}")
+diff --git a/search_routing.py b/search_routing.py
+new file mode 100644
+index 00000000..bd116a11
+--- /dev/null
++++ b/search_routing.py
+@@ -0,0 +1,5 @@
++
++with open("fastapi/routing.py", "r") as f:
++    for i, line in enumerate(f):
++        if "_prepare_response_content" in line:
++            print(f"{i+1}: {line.strip()}")

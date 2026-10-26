@@ -1,0 +1,89 @@
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index 1c7a17c4c..8bc8c3d05 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -511,6 +511,16 @@ def get_fields_from_routes(
+     return flat_models
+ 
+ 
++def flatten_routes(routes: Sequence[BaseRoute]) -> list[routing.APIRoute]:
++    flat_routes: list[routing.APIRoute] = []
++    for route in routes:
++        if isinstance(route, routing.APIRoute):
++            flat_routes.append(route)
++        elif isinstance(route, routing.RouterInclude):
++            flat_routes.extend(flatten_routes(route.router.routes))
++    return flat_routes
++
++
+ def get_openapi(
+     *,
+     title: str,
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index 21a1385a2..567fba320 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -1002,6 +1002,41 @@ class APIRoute(routing.Route):
+         return match, child_scope
+ 
+ 
++class RouterInclude(routing.Route):
++    def __init__(
++        self,
++        router: "APIRouter",
++        prefix: str = "",
++        tags: list[str | Enum] | None = None,
++        dependencies: Sequence[params.Depends] | None = None,
++        default_response_class: type[Response] = JSONResponse,
++        responses: dict[int | str, dict[str, Any]] | None = None,
++        callbacks: list[BaseRoute] | None = None,
++        deprecated: bool | None = None,
++        include_in_schema: bool = True,
++        generate_unique_id_function: Callable[[APIRoute], str] = generate_unique_id,
++    ) -> None:
++        super().__init__(path=prefix, endpoint=router)
++        self.router = router
++        self.tags = tags
++        self.dependencies = dependencies
++        self.default_response_class = default_response_class
++        self.responses = responses
++        self.callbacks = callbacks
++        self.deprecated = deprecated
++        self.include_in_schema = include_in_schema
++        self.generate_unique_id_function = generate_unique_id_function
++
++    def matches(self, scope: Scope) -> tuple[Match, Scope]:
++        match, child_scope = super().matches(scope)
++        if match != Match.NONE:
++            match, child_scope = self.router.matches(child_scope)
++        return match, child_scope
++
++    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
++        await self.router.handle(scope, receive, send)
++
++
+ class APIRouter(routing.Router):
+     """
+     `APIRouter` class, used to group *path operations*, for example to structure
+@@ -1314,6 +1349,21 @@ class APIRouter(routing.Router):
+         self.generate_unique_id_function = generate_unique_id_function
+         self.strict_content_type = strict_content_type
+ 
++    def matches(self, scope: Scope) -> tuple[Match, Scope]:
++        for route in self.routes:
++            match, child_scope = route.matches(scope)
++            if match != Match.NONE:
++                return match, child_scope
++        return Match.NONE, scope
++
++    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
++        match, child_scope = self.matches(scope)
++        if match != Match.NONE:
++            route = child_scope["route"]
++            await route.handle(child_scope, receive, send)
++        else:
++            await self.default(child_scope, receive, send)
++
+     def route(
+         self,
+         path: str,

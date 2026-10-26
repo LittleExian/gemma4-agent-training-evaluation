@@ -1,0 +1,249 @@
+diff --git a/fastapi/_compat/shared.py b/fastapi/_compat/shared.py
+index 68b9bbdf..df4f5cdd 100644
+--- a/fastapi/_compat/shared.py
++++ b/fastapi/_compat/shared.py
+@@ -27,6 +27,21 @@ else:
+         types.UnionType,
+     )  # pyright: ignore[reportAttributeAccessIssue]
+ 
++
++def is_typealiastype(tp: Any) -> bool:
++    try:
++        from typing import TypeAliasType
++        return isinstance(tp, TypeAliasType)
++    except ImportError:
++        return False
++
++
++def resolve_type_alias(annotation: Any) -> Any:
++    while is_typealiastype(annotation):
++        annotation = annotation.__value__
++    return annotation
++
++
+ PYDANTIC_VERSION_MINOR_TUPLE = tuple(int(x) for x in PYDANTIC_VERSION.split(".")[:2])
+ PYDANTIC_V2 = PYDANTIC_VERSION_MINOR_TUPLE[0] == 2
+ 
+@@ -64,6 +79,7 @@ def _annotation_is_sequence(annotation: Union[type[Any], None]) -> bool:
+ 
+ 
+ def field_annotation_is_sequence(annotation: Union[type[Any], None]) -> bool:
++    annotation = resolve_type_alias(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         for arg in get_args(annotation):
+@@ -88,6 +104,7 @@ def _annotation_is_complex(annotation: Union[type[Any], None]) -> bool:
+ 
+ 
+ def field_annotation_is_complex(annotation: Union[type[Any], None]) -> bool:
++    annotation = resolve_type_alias(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         return any(field_annotation_is_complex(arg) for arg in get_args(annotation))
+@@ -109,6 +126,7 @@ def field_annotation_is_scalar(annotation: Any) -> bool:
+ 
+ 
+ def field_annotation_is_scalar_sequence(annotation: Union[type[Any], None]) -> bool:
++    annotation = resolve_type_alias(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         at_least_one_scalar_sequence = False
+@@ -126,6 +144,7 @@ def field_annotation_is_scalar_sequence(annotation: Union[type[Any], None]) -> b
+ 
+ 
+ def is_bytes_or_nonable_bytes_annotation(annotation: Any) -> bool:
++    annotation = resolve_type_alias(annotation)
+     if lenient_issubclass(annotation, bytes):
+         return True
+     origin = get_origin(annotation)
+@@ -137,6 +156,7 @@ def is_bytes_or_nonable_bytes_annotation(annotation: Any) -> bool:
+ 
+ 
+ def is_uploadfile_or_nonable_uploadfile_annotation(annotation: Any) -> bool:
++    annotation = resolve_type_alias(annotation)
+     if lenient_issubclass(annotation, UploadFile):
+         return True
+     origin = get_origin(annotation)
+@@ -148,6 +168,7 @@ def is_uploadfile_or_nonable_uploadfile_annotation(annotation: Any) -> bool:
+ 
+ 
+ def is_bytes_sequence_annotation(annotation: Any) -> bool:
++    annotation = resolve_type_alias(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         at_least_one = False
+@@ -163,6 +184,7 @@ def is_bytes_sequence_annotation(annotation: Any) -> bool:
+ 
+ 
+ def is_uploadfile_sequence_annotation(annotation: Any) -> bool:
++    annotation = resolve_type_alias(annotation)
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         at_least_one = False
+@@ -192,6 +214,7 @@ def is_pydantic_v1_model_class(cls: Any) -> bool:
+ 
+ 
+ def annotation_is_pydantic_v1(annotation: Any) -> bool:
++    annotation = resolve_type_alias(annotation)
+     if is_pydantic_v1_model_class(annotation):
+         return True
+     origin = get_origin(annotation)
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index dae78a32..fd3c2a2b 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -429,12 +429,14 @@ def copy_field_info(*, field_info: FieldInfo, annotation: Any) -> FieldInfo:
+ 
+ 
+ def serialize_sequence_value(*, field: ModelField, value: Any) -> Sequence[Any]:
+-    origin_type = get_origin(field.field_info.annotation) or field.field_info.annotation
++    annotation = shared.resolve_type_alias(field.field_info.annotation)
++    origin_type = get_origin(annotation) or annotation
+     if origin_type is Union or origin_type is UnionType:  # Handle optional sequences
+-        union_args = get_args(field.field_info.annotation)
++        union_args = get_args(annotation)
+         for union_arg in union_args:
+             if union_arg is type(None):
+                 continue
++            union_arg = shared.resolve_type_alias(union_arg)
+             origin_type = get_origin(union_arg) or union_arg
+             break
+     assert issubclass(origin_type, shared.sequence_types)  # type: ignore[arg-type]
+@@ -460,7 +462,7 @@ def create_body_model(
+ def get_model_fields(model: type[BaseModel]) -> list[ModelField]:
+     model_fields: list[ModelField] = []
+     for name, field_info in model.model_fields.items():
+-        type_ = field_info.annotation
++        type_ = shared.resolve_type_alias(field_info.annotation)
+         if lenient_issubclass(type_, (BaseModel, dict)) or is_dataclass(type_):
+             model_config = None
+         else:
+@@ -522,9 +524,11 @@ def get_flat_models_from_model(
+ def get_flat_models_from_annotation(
+     annotation: Any, known_models: TypeModelSet
+ ) -> TypeModelSet:
++    annotation = shared.resolve_type_alias(annotation)
+     origin = get_origin(annotation)
+     if origin is not None:
+         for arg in get_args(annotation):
++            arg = shared.resolve_type_alias(arg)
+             if lenient_issubclass(arg, (BaseModel, Enum)) and arg not in known_models:
+                 known_models.add(arg)
+                 if lenient_issubclass(arg, BaseModel):
+@@ -537,7 +541,7 @@ def get_flat_models_from_annotation(
+ def get_flat_models_from_field(
+     field: ModelField, known_models: TypeModelSet
+ ) -> TypeModelSet:
+-    field_type = field.type_
++    field_type = shared.resolve_type_alias(field.type_)
+     if lenient_issubclass(field_type, BaseModel):
+         if field_type in known_models:
+             return known_models
+diff --git a/repro_get_model_fields.py b/repro_get_model_fields.py
+new file mode 100644
+index 00000000..0b010b78
+--- /dev/null
++++ b/repro_get_model_fields.py
+@@ -0,0 +1,52 @@
++import sys
++from typing import Annotated
++from pydantic import BaseModel
++from fastapi._compat import v2, shared
++
++# Mock TypeAliasType for Python < 3.12 if necessary, but we are on 3.12+
++if sys.version_info >= (3, 12):
++    from typing import TypeAliasType
++else:
++    # This is just for compatibility in case we run on < 3.12, 
++    # but the fix is specifically for 3.12+
++    class TypeAliasType:
++        def __init__(self, name, value):
++            self.name = name
++            self.__value__ = value
++        def __repr__(self):
++            return f"TypeAliasType({self.name}, {self.__value__})"
++
++class MyModel(BaseModel):
++    x: int
++
++# Create a type alias for MyModel
++# In Python 3.12: type MyModelAlias = MyModel
++# Using TypeAliasType directly for compatibility with the test script
++MyModelAlias = TypeAliasType("MyModelAlias", MyModel)
++
++class ContainerModel(BaseModel):
++    field: MyModelAlias
++
++def test_get_model_fields():
++    fields = v2.get_model_fields(ContainerModel)
++    # The field 'field' should have its type resolved to MyModel
++    # and therefore it should have model_config = None (since it's a BaseModel)
++    # Wait, let's check the logic in get_model_fields:
++    # if lenient_issubclass(type_, (BaseModel, dict)) or is_dataclass(type_):
++    #     model_config = None
++    # else:
++    #     model_config = model.model_config
++    
++    # Let's see what we get
++    for f in fields:
++        print(f"Field {f.name}: config={f.config}")
++        if f.name == "field":
++            assert f.config is None, f"Field 'field' should have config None, got {f.config}"
++
++if __name__ == "__main__":
++    try:
++        test_get_model_fields()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        sys.exit(1)
+diff --git a/reproduction.py b/reproduction.py
+new file mode 100644
+index 00000000..5ff1eb54
+--- /dev/null
++++ b/reproduction.py
+@@ -0,0 +1,44 @@
++import sys
++from typing import Union, get_origin, get_args
++from fastapi._compat import shared
++from fastapi._compat import v2
++from pydantic import BaseModel
++from pydantic.fields import FieldInfo
++
++# For Python 3.12+
++if sys.version_info >= (3, 12):
++    type MyAlias = list[int]
++    type MyModelAlias = BaseModel
++    
++    print(f"MyAlias: {MyAlias}, origin: {get_origin(MyAlias)}")
++    print(f"Resolved MyAlias: {shared.resolve_type_alias(MyAlias)}, origin: {get_origin(shared.resolve_type_alias(MyAlias))}")
++    
++    # Test get_flat_models_from_field
++    from fastapi._compat.v2 import get_flat_models_from_field, ModelField
++    
++    # Create a ModelField with MyModelAlias
++    field_info = FieldInfo(annotation=MyModelAlias)
++    field = ModelField(field_info=field_info, name="test_field")
++    
++    known_models = set()
++    get_flat_models_from_field(field, known_models)
++    print(f"Known models: {known_models}")
++    assert BaseModel in known_models
++    
++    # Test with MyAlias
++    field_info_alias = FieldInfo(annotation=MyAlias)
++    field_alias = ModelField(field_info=field_info_alias, name="test_alias_field")
++    known_models_alias = set()
++    get_flat_models_from_field(field_alias, known_models_alias)
++    print(f"Known models alias: {known_models_alias}")
++    
++    # Test with a model alias in a list
++    type MyModelListAlias = list[MyModelAlias]
++    field_info_list = FieldInfo(annotation=MyModelListAlias)
++    field_list = ModelField(field_info=field_info_list, name="test_list_field")
++    known_models_list = set()
++    get_flat_models_from_field(field_list, known_models_list)
++    print(f"Known models list: {known_models_list}")
++    assert BaseModel in known_models_list
++else:
++    print("Not running on Python 3.12+")

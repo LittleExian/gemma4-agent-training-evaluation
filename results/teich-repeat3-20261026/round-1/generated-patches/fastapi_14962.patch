@@ -1,0 +1,93 @@
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index ea82ab14..8a85809b 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -271,6 +271,7 @@ async def serialize_response(
+     exclude_none: bool = False,
+     is_coroutine: bool = True,
+     endpoint_ctx: EndpointContext | None = None,
++    response_class: type[Response] | None = None,
+ ) -> Any:
+     if field:
+         if is_coroutine:
+@@ -287,6 +288,17 @@ async def serialize_response(
+                 endpoint_ctx=ctx,
+             )
+ 
++        if response_class is not None and isinstance(response_class, type) and issubclass(response_class, JSONResponse):
++            return field._type_adapter.dump_json(
++                value,
++                include=include,
++                exclude=exclude,
++                by_alias=by_alias,
++                exclude_unset=exclude_unset,
++                exclude_defaults=exclude_defaults,
++                exclude_none=exclude_none,
++            )
++
+         return field.serialize(
+             value,
+             include=include,
+@@ -454,8 +466,17 @@ def get_request_handler(
+                     exclude_none=response_model_exclude_none,
+                     is_coroutine=is_coroutine,
+                     endpoint_ctx=endpoint_ctx,
++                    response_class=actual_response_class,
+                 )
+-                response = actual_response_class(content, **response_args)
++                if isinstance(content, bytes) and isinstance(actual_response_class, type) and issubclass(actual_response_class, JSONResponse):
++                    response = actual_response_class(
++                        content=None,
++                        media_type="application/json",
++                        **response_args
++                    )
++                    response.body = content
++                else:
++                    response = actual_response_class(content, **response_args)
+                 if not is_body_allowed_for_status_code(response.status_code):
+                     response.body = b""
+                 response.headers.raw.extend(solved_result.response.headers.raw)
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..decd2855
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,38 @@
++from fastapi import FastAPI
++from fastapi.responses import Response, JSONResponse
++from pydantic import BaseModel
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++class User(BaseModel):
++    name: str
++    age: int
++
++@app.middleware("http")
++async def check_response(request, call_next):
++    response = await call_next(request)
++    if request.url.path == "/custom":
++        print(f"Response type: {type(response)}")
++        assert hasattr(response, "custom"), f"Response should have 'custom' attribute, but it is {type(response)}"
++    return response
++
++class CustomJSONResponse(JSONResponse):
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.custom = True
++
++@app.get("/custom", response_model=User, response_class=CustomJSONResponse)
++async def get_custom():
++    return User(name="John", age=30)
++
++client = TestClient(app)
++
++def test_custom():
++    response = client.get("/custom")
++    assert response.status_code == 200
++    assert response.json() == {"name": "John", "age": 30}
++    print("Test custom passed")
++
++if __name__ == "__main__":
++    test_custom()

@@ -1,0 +1,115 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index dae78a32..1d902d3d 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -15,7 +15,7 @@ from typing import (
+ from fastapi._compat import shared
+ from fastapi.openapi.constants import REF_TEMPLATE
+ from fastapi.types import IncEx, ModelNameMap, UnionType
+-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
++from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model, Json
+ from pydantic import PydanticSchemaGenerationError as PydanticSchemaGenerationError
+ from pydantic import PydanticUndefinedAnnotation as PydanticUndefinedAnnotation
+ from pydantic import ValidationError as ValidationError
+@@ -404,6 +404,8 @@ def is_scalar_field(field: ModelField) -> bool:
+ 
+ 
+ def is_sequence_field(field: ModelField) -> bool:
++    if Json in getattr(field.field_info, "metadata", []):
++        return False
+     return shared.field_annotation_is_sequence(field.field_info.annotation)
+ 
+ 
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index e5ac51d5..e585ba86 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -730,10 +730,14 @@ def _get_multidict_value(
+     field: ModelField, values: Mapping[str, Any], alias: Union[str, None] = None
+ ) -> Any:
+     alias = alias or get_validation_alias(field)
+-    if is_sequence_field(field) and isinstance(values, (ImmutableMultiDict, Headers)):
++    is_seq = is_sequence_field(field)
++    is_multidict = isinstance(values, (ImmutableMultiDict, Headers))
++    print(f"DEBUG: field={field.name}, is_seq={is_seq}, is_multidict={is_multidict}, values_type={type(values)}")
++    if is_seq and is_multidict:
+         value = values.getlist(alias)
+     else:
+         value = values.get(alias, None)
++    print(f"DEBUG: value={value}, type(value)={type(value)}")
+     if (
+         value is None
+         or (
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..a4208b9e
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,30 @@
++from fastapi import FastAPI, Form
++from pydantic import Json
++from typing import List
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++@app.post("/test")
++async def test_endpoint(field: Json[List[str]] = Form(...)):
++    return {"field": field}
++
++client = TestClient(app)
++
++def test_json_list_form():
++    # The JSON string for ["abc", "def"] is '["abc", "def"]'
++    # We send it as a form field.
++    response = client.post("/test", data={"field": '["abc", "def"]'})
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"field": ["abc", "def"]}
++
++if __name__ == "__main__":
++    try:
++        test_json_list_form()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..7c6d5158
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,31 @@
++from typing import Annotated, List
++from pydantic import Json
++from fastapi import FastAPI, Form
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++@app.post("/upload")
++def upload(
++    tags: Annotated[Json[List[str]], Form()]
++):
++    return {"tags": tags}
++
++client = TestClient(app)
++
++def test_json_list_form():
++    # Client sends JSON string as form data
++    response = client.post("/upload", data={"tags": '["abc", "def"]'})
++    print(f"Response: {response.json()}")
++    print(f"Status: {response.status_code}")
++    assert response.status_code == 200
++    assert response.json() == {"tags": ["abc", "def"]}
++
++if __name__ == "__main__":
++    try:
++        test_json_list_form()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()

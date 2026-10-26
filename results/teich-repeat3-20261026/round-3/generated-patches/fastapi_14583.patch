@@ -1,0 +1,151 @@
+diff --git a/fastapi/_compat/main.py b/fastapi/_compat/main.py
+index 95053a23..158e0624 100644
+--- a/fastapi/_compat/main.py
++++ b/fastapi/_compat/main.py
+@@ -6,7 +6,7 @@ from typing import (
+ )
+ 
+ from fastapi._compat import may_v1
+-from fastapi._compat.shared import lenient_issubclass
++from fastapi._compat.shared import lenient_issubclass, warn_v1
+ from fastapi.types import ModelNameMap
+ from pydantic import BaseModel
+ from typing_extensions import Literal
+@@ -31,6 +31,7 @@ from .v2 import (
+ @lru_cache
+ def get_cached_model_fields(model: type[BaseModel]) -> list[ModelField]:
+     if lenient_issubclass(model, may_v1.BaseModel):
++        warn_v1()
+         from fastapi._compat import v1
+ 
+         return v1.get_model_fields(model)  # type: ignore[arg-type,return-value]
+@@ -49,6 +50,7 @@ def _is_undefined(value: object) -> bool:
+ 
+ def _get_model_config(model: BaseModel) -> Any:
+     if isinstance(model, may_v1.BaseModel):
++        warn_v1()
+         from fastapi._compat import v1
+ 
+         return v1._get_model_config(model)
+@@ -60,6 +62,7 @@ def _model_dump(
+     model: BaseModel, mode: Literal["json", "python"] = "json", **kwargs: Any
+ ) -> Any:
+     if isinstance(model, may_v1.BaseModel):
++        warn_v1()
+         from fastapi._compat import v1
+ 
+         return v1._model_dump(model, mode=mode, **kwargs)
+diff --git a/fastapi/_compat/shared.py b/fastapi/_compat/shared.py
+index 3a11e88a..cec096d6 100644
+--- a/fastapi/_compat/shared.py
++++ b/fastapi/_compat/shared.py
+@@ -13,6 +13,7 @@ from typing import (
+ from fastapi._compat import may_v1
+ from fastapi.types import UnionType
+ from pydantic import BaseModel
++import warnings
+ from pydantic.version import VERSION as PYDANTIC_VERSION
+ from starlette.datastructures import UploadFile
+ from typing_extensions import get_args, get_origin
+@@ -31,6 +32,25 @@ PYDANTIC_VERSION_MINOR_TUPLE = tuple(int(x) for x in PYDANTIC_VERSION.split(".")
+ PYDANTIC_V2 = PYDANTIC_VERSION_MINOR_TUPLE[0] == 2
+ 
+ 
++_v1_warned = False
++
++
++def warn_v1() -> None:
++    global _v1_warned
++    if not _v1_warned:
++        warnings.warn(
++            "Pydantic v1 is deprecated and will be removed in a future FastAPI version. "
++            "Please migrate to Pydantic v2.",
++            DeprecationWarning,
++            stacklevel=4,
++        )
++        _v1_warned = True
++
++
++if not PYDANTIC_V2:
++    warn_v1()
++
++
+ sequence_annotation_to_type = {
+     Sequence: list,
+     list: list,
+@@ -181,11 +201,13 @@ def is_uploadfile_sequence_annotation(annotation: Any) -> bool:
+ 
+ def annotation_is_pydantic_v1(annotation: Any) -> bool:
+     if lenient_issubclass(annotation, may_v1.BaseModel):
++        warn_v1()
+         return True
+     origin = get_origin(annotation)
+     if origin is Union or origin is UnionType:
+         for arg in get_args(annotation):
+             if lenient_issubclass(arg, may_v1.BaseModel):
++                warn_v1()
+                 return True
+     if field_annotation_is_sequence(annotation):
+         for sub_annotation in get_args(annotation):
+diff --git a/verify_warn_v1.py b/verify_warn_v1.py
+new file mode 100644
+index 00000000..ed737fb3
+--- /dev/null
++++ b/verify_warn_v1.py
+@@ -0,0 +1,56 @@
++import warnings
++from fastapi._compat.shared import warn_v1
++from pydantic import BaseModel as PydanticBaseModel
++from fastapi._compat.main import get_cached_model_fields
++
++def test_warn_v1_v2():
++    print("Testing warn_v1 with Pydantic v2 model...")
++    # Pydantic v2 model
++    class ModelV2(PydanticBaseModel):
++        x: int
++
++    with warnings.catch_warnings(record=True) as w:
++        warnings.simplefilter("always")
++        get_cached_model_fields(ModelV2)
++        for warning in w:
++            if "Pydantic v1" in str(warning.message):
++                print(f"Unexpected warning: {warning.message}")
++                return False
++    print("No Pydantic v1 warning for Pydantic v2 model. OK.")
++    return True
++
++def test_warn_v1_v1():
++    print("Testing warn_v1 with Pydantic v1 model...")
++    # To simulate Pydantic v1 model, we need to use pydantic.v1.BaseModel if available
++    try:
++        from pydantic import v1 as pydantic_v1
++    except ImportError:
++        print("Pydantic v1 not available in this environment. Skipping test.")
++        return True
++
++    class ModelV1(pydantic_v1.BaseModel):
++        x: int
++
++    with warnings.catch_warnings(record=True) as w:
++        warnings.simplefilter("always")
++        get_cached_model_fields(ModelV1)
++        found = False
++        for warning in w:
++            if "Pydantic v1" in str(warning.message):
++                print(f"Found expected warning: {warning.message}")
++                found = True
++                break
++        if not found:
++            print("Expected Pydantic v1 warning not found.")
++            return False
++    print("Pydantic v1 warning found for Pydantic v1 model. OK.")
++    return True
++
++if __name__ == "__main__":
++    v2_ok = test_warn_v1_v2()
++    v1_ok = test_warn_v1_v1()
++    if v2_ok and v1_ok:
++        print("All tests passed!")
++    else:
++        print("Some tests failed.")
++        exit(1)

@@ -1,0 +1,131 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index d6359c0f..77bf9278 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -42,12 +42,24 @@ class Dependant:
+     use_cache: bool = True
+     path: Optional[str] = None
+     scope: Union[Literal["function", "request"], None] = None
++    declares_scopes: bool = False
++
++    @cached_property
++    def uses_scopes(self) -> bool:
++        if self.declares_scopes:
++            return True
++        if self.security_scopes_param_name is not None:
++            return True
++        if any(dep.uses_scopes for dep in self.dependencies):
++            return True
++        return False
+ 
+     @cached_property
+     def cache_key(self) -> DependencyCacheKey:
++        scopes = tuple(sorted(set(self.security_scopes or []))) if self.uses_scopes else ()
+         return (
+             self.call,
+-            tuple(sorted(set(self.security_scopes or []))),
++            scopes,
+             self.computed_scope or "",
+         )
+ 
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 45353835..fac53ec5 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -127,13 +127,16 @@ def get_parameterless_sub_dependant(*, depends: params.Depends, path: str) -> De
+         "A parameter-less dependency must have a callable dependency"
+     )
+     use_security_scopes: List[str] = []
++    declares_scopes = False
+     if isinstance(depends, params.Security) and depends.scopes:
+         use_security_scopes.extend(depends.scopes)
++        declares_scopes = True
+     return get_dependant(
+         path=path,
+         call=depends.dependency,
+         scope=depends.scope,
+         security_scopes=use_security_scopes,
++        declares_scopes=declares_scopes,
+     )
+ 
+ 
+@@ -235,6 +238,7 @@ def get_dependant(
+     security_scopes: Optional[List[str]] = None,
+     use_cache: bool = True,
+     scope: Union[Literal["function", "request"], None] = None,
++    declares_scopes: bool = False,
+ ) -> Dependant:
+     dependant = Dependant(
+         call=call,
+@@ -243,6 +247,7 @@ def get_dependant(
+         security_scopes=security_scopes,
+         use_cache=use_cache,
+         scope=scope,
++        declares_scopes=declares_scopes,
+     )
+     path_param_names = get_path_param_names(path)
+     endpoint_signature = get_typed_signature(call)
+@@ -276,11 +281,13 @@ def get_dependant(
+                     '"request", it cannot depend on dependencies with scope "function".'
+                 )
+             use_security_scopes = security_scopes or []
++            declares_scopes = False
+             if isinstance(param_details.depends, params.Security):
+                 if param_details.depends.scopes:
+                     use_security_scopes = use_security_scopes + list(
+                         param_details.depends.scopes
+                     )
++                    declares_scopes = True
+             sub_dependant = get_dependant(
+                 path=path,
+                 call=param_details.depends.dependency,
+@@ -288,6 +295,7 @@ def get_dependant(
+                 security_scopes=use_security_scopes,
+                 use_cache=param_details.depends.use_cache,
+                 scope=param_details.depends.scope,
++                declares_scopes=declares_scopes,
+             )
+             dependant.dependencies.append(sub_dependant)
+             continue
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..dae5d346
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,36 @@
++from fastapi import FastAPI, Depends, Security
++from fastapi.security.oauth2 import SecurityScopes
++from fastapi.testclient import TestClient
++import pytest
++
++# Use a global to count calls
++call_count = 0
++
++def dep_no_scopes():
++    global call_count
++    call_count += 1
++    return "no_scopes"
++
++def dep_with_scopes(d1 = Depends(dep_no_scopes)):
++    return "with_scopes"
++
++app = FastAPI()
++
++@app.get("/")
++def root(
++    d1 = Depends(dep_no_scopes),
++    d2 = Security(dep_with_scopes, scopes=["admin"]),
++):
++    return {"d1": d1, "d2": d2}
++
++client = TestClient(app)
++
++def test_cache_hit():
++    global call_count
++    call_count = 0
++    client.get("/")
++    assert call_count == 1, f"Expected dep_no_scopes to be called once, but it was called {call_count} times"
++
++if __name__ == "__main__":
++    test_cache_hit()
++    print("Test passed!")

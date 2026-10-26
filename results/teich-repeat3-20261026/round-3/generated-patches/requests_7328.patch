@@ -1,0 +1,123 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..fa46489e
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,96 @@
++import requests
++from requests.sessions import Session
++from requests.exceptions import TooManyRedirects
++from unittest.mock import MagicMock
++
++def test_self_reference():
++    session = Session()
++    session.max_redirects = 5
++    
++    class CapturingAdapter(requests.adapters.HTTPAdapter):
++        def __init__(self, *args, **kwargs):
++            super().__init__(*args, **kwargs)
++            self.responses = []
++            
++        def send(self, request, **kwargs):
++            resp = self.side_effect_func(request, **kwargs)
++            self.responses.append(resp)
++            return resp
++
++    resp1 = requests.Response()
++    resp1.status_code = 302
++    resp1.headers = {'Location': 'http://redirect2'}
++    resp1.url = 'http://redirect1'
++    
++    resp2 = requests.Response()
++    resp2.status_code = 302
++    resp2.headers = {'Location': 'http://redirect3'}
++    resp2.url = 'http://redirect2'
++    
++    resp3 = requests.Response()
++    resp3.status_code = 200
++    resp3.url = 'http://redirect3'
++    
++    capturing_adapter = CapturingAdapter()
++    capturing_adapter.side_effect_func = MagicMock(side_effect=[resp1, resp2, resp3])
++    session.mount('http://', capturing_adapter)
++    session.mount('https://', capturing_adapter)
++    
++    session.get('http://start', allow_redirects=True)
++    
++    for r in capturing_adapter.responses:
++        if r in r.history:
++            print(f"Self-reference found in response {r.url}!")
++            return False
++            
++    print("No self-reference found.")
++    return True
++
++def test_redirect_limit():
++    session = Session()
++    session.max_redirects = 2
++    
++    class CapturingAdapter(requests.adapters.HTTPAdapter):
++        def __init__(self, *args, **kwargs):
++            super().__init__(*args, **kwargs)
++            self.responses = []
++            
++        def send(self, request, **kwargs):
++            resp = self.side_effect_func(request, **kwargs)
++            self.responses.append(resp)
++            return resp
++
++    # 3 redirects (total 4 responses)
++    resps = []
++    for i in range(3):
++        r = requests.Response()
++        r.status_code = 302
++        r.headers = {'Location': f'http://redirect{i+2}'}
++        r.url = f'http://redirect{i+1}'
++        resps.append(r)
++    
++    r_final = requests.Response()
++    r_final.status_code = 200
++    r_final.url = 'http://redirect4'
++    resps.append(r_final)
++    
++    capturing_adapter = CapturingAdapter()
++    capturing_adapter.side_effect_func = MagicMock(side_effect=resps)
++    session.mount('http://', capturing_adapter)
++    session.mount('https://', capturing_adapter)
++    
++    try:
++        session.get('http://start', allow_redirects=True)
++        print("Redirect limit not enforced!")
++        return False
++    except TooManyRedirects:
++        print("Redirect limit enforced.")
++        return True
++
++if __name__ == '__main__':
++    if test_self_reference() and test_redirect_limit():
++        print("All tests passed!")
++        exit(0)
++    else:
++        print("Some tests failed!")
++        exit(1)
+diff --git a/src/requests/sessions.py b/src/requests/sessions.py
+index 578cc44d..f4e5cadd 100644
+--- a/src/requests/sessions.py
++++ b/src/requests/sessions.py
+@@ -181,14 +181,14 @@ class SessionRedirectMixin:
+             # Update history and keep track of redirects.
+             # resp.history must ignore the original request in this loop
+             hist.append(resp)
+-            resp.history = hist[1:]
++            resp.history = hist[1:-1]
+ 
+             try:
+                 resp.content  # Consume socket so it can be released
+             except (ChunkedEncodingError, ContentDecodingError, RuntimeError):
+                 resp.raw.read(decode_content=False)
+ 
+-            if len(resp.history) >= self.max_redirects:
++            if len(hist) - 1 >= self.max_redirects:
+                 raise TooManyRedirects(
+                     f"Exceeded {self.max_redirects} redirects.", response=resp
+                 )

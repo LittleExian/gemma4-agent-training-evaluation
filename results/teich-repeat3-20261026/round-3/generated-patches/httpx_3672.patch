@@ -1,0 +1,144 @@
+diff --git a/src/ahttpx/_parsers.py b/src/ahttpx/_parsers.py
+index 8a52a56..5abb10b 100644
+--- a/src/ahttpx/_parsers.py
++++ b/src/ahttpx/_parsers.py
+@@ -80,7 +80,7 @@ class HTTPParser:
+     client.recv_status_line()
+     client.recv_headers()
+     client.recv_body()
+-    client.complete()
++    client.reset()
+     client.close()
+     """
+     def __init__(self, stream: Stream, mode: str) -> None:
+@@ -109,6 +109,10 @@ class HTTPParser:
+         # Special states...
+         self.processing_1xx = False
+ 
++    @property
++    def keep_alive(self) -> bool:
++        return self.send_keep_alive and self.recv_keep_alive
++
+     async def send_method_line(self, method: bytes, target: bytes, protocol: bytes) -> None:
+         """
+         Send the initial request line:
+@@ -375,9 +379,9 @@ class HTTPParser:
+             self.recv_state = State.DONE
+         return body
+ 
+-    async def complete(self):
++    async def reset(self):
+         is_fully_complete = self.send_state == State.DONE and self.recv_state == State.DONE
+-        is_keepalive = self.send_keep_alive and self.recv_keep_alive
++        is_keepalive = self.keep_alive
+ 
+         if not (is_fully_complete and is_keepalive):
+             await self.close()
+diff --git a/src/ahttpx/_pool.py b/src/ahttpx/_pool.py
+index f712cfa..95c69ba 100644
+--- a/src/ahttpx/_pool.py
++++ b/src/ahttpx/_pool.py
+@@ -170,7 +170,7 @@ class Connection(Transport):
+         await self._send_head(request)
+         await self._send_body(request)
+         code, headers = await self._recv_head()
+-        stream = HTTPStream(self._recv_body, self._complete)
++        stream = HTTPStream(self._recv_body, self._reset)
+         # TODO...
+         return Response(code, headers=headers, content=stream)
+         #    finally:
+@@ -236,8 +236,8 @@ class Connection(Transport):
+         return await self._parser.recv_body()
+ 
+     # Request/response cycle complete...
+-    async def _complete(self) -> None:
+-        await self._parser.complete()
++    async def _reset(self) -> None:
++        await self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+     async def _close(self) -> None:
+diff --git a/src/ahttpx/_server.py b/src/ahttpx/_server.py
+index a9103cc..a787c90 100644
+--- a/src/ahttpx/_server.py
++++ b/src/ahttpx/_server.py
+@@ -33,7 +33,7 @@ class HTTPConnection:
+         try:
+             while not self._parser.is_closed():
+                 method, url, headers = await self._recv_head()
+-                stream = HTTPStream(self._recv_body, self._complete)
++                stream = HTTPStream(self._recv_body, self._reset)
+                 # TODO: Handle endpoint exceptions
+                 async with Request(method, url, headers=headers, content=stream) as request:
+                     try:
+@@ -88,8 +88,8 @@ class HTTPConnection:
+         await self._parser.send_body(b'')
+ 
+     # Start it all over again...
+-    async def _complete(self):
+-        await self._parser.complete
++    async def _reset(self):
++        await self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+ 
+diff --git a/src/ahttpx/_streams.py b/src/ahttpx/_streams.py
+index 3cf7798..e48cfb6 100644
+--- a/src/ahttpx/_streams.py
++++ b/src/ahttpx/_streams.py
+@@ -92,9 +92,9 @@ class FileStream(Stream):
+ 
+ 
+ class HTTPStream(Stream):
+-    def __init__(self, next_chunk, complete):
++    def __init__(self, next_chunk, reset):
+         self._next_chunk = next_chunk
+-        self._complete = complete
++        self._reset = reset
+         self._buffer = io.BytesIO()
+ 
+     async def read(self, size=-1) -> bytes:
+@@ -128,8 +128,8 @@ class HTTPStream(Stream):
+ 
+     async def close(self) -> None:
+         self._buffer.close()
+-        if self._complete is not None:
+-            await self._complete()
++        if self._reset is not None:
++            await self._reset()
+ 
+ 
+ class MultiPartStream(Stream):
+diff --git a/src/httpx/_parsers.py b/src/httpx/_parsers.py
+index 830fccd..3f6b268 100644
+--- a/src/httpx/_parsers.py
++++ b/src/httpx/_parsers.py
+@@ -80,7 +80,7 @@ class HTTPParser:
+     client.recv_status_line()
+     client.recv_headers()
+     client.recv_body()
+-    client.complete()
++    client.reset()
+     client.close()
+     """
+     def __init__(self, stream: Stream, mode: str) -> None:
+@@ -109,6 +109,10 @@ class HTTPParser:
+         # Special states...
+         self.processing_1xx = False
+ 
++    @property
++    def keep_alive(self) -> bool:
++        return self.send_keep_alive and self.recv_keep_alive
++
+     def send_method_line(self, method: bytes, target: bytes, protocol: bytes) -> None:
+         """
+         Send the initial request line:
+@@ -375,7 +379,7 @@ class HTTPParser:
+             self.recv_state = State.DONE
+         return body
+ 
+-    def complete(self):
++    def reset(self):
+         is_fully_complete = self.send_state == State.DONE and self.recv_state == State.DONE
+         is_keepalive = self.send_keep_alive and self.recv_keep_alive
+ 

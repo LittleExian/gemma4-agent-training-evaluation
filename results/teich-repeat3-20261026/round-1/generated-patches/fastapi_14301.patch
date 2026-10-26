@@ -1,0 +1,143 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index c5c6b69b..30485e71 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -129,7 +129,11 @@ def get_parameterless_sub_dependant(*, depends: params.Depends, path: str) -> De
+     if isinstance(depends, params.Security) and depends.scopes:
+         use_security_scopes.extend(depends.scopes)
+     return get_dependant(
+-        path=path, call=depends.dependency, security_scopes=use_security_scopes
++        path=path,
++        call=depends.dependency,
++        security_scopes=use_security_scopes,
++        use_cache=depends.use_cache,
++        scope=depends.scope,
+     )
+ 
+ 
+@@ -232,6 +236,8 @@ def get_dependant(
+     use_cache: bool = True,
+     scope: Union[Literal["function", "request"], None] = None,
+ ) -> Dependant:
++    if scope == "function":
++        use_cache = False
+     dependant = Dependant(
+         call=call,
+         name=name,
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..53f19980
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,27 @@
++from fastapi import FastAPI, Depends
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++call_count = 0
++
++def dep_d():
++    global call_count
++    call_count += 1
++    return "d"
++
++def dep_a(d = Depends(dep_d, scope="function")):
++    return d
++
++def dep_b(d = Depends(dep_d, scope="function")):
++    return d
++
++@app.get("/", dependencies=[Depends(dep_a), Depends(dep_b)])
++def root():
++    return {"message": "Hello World"}
++
++client = TestClient(app)
++call_count = 0
++client.get("/")
++print(f"Call count: {call_count}")
++assert call_count == 2
+diff --git a/repro_regular.py b/repro_regular.py
+new file mode 100644
+index 00000000..5ed56f12
+--- /dev/null
++++ b/repro_regular.py
+@@ -0,0 +1,27 @@
++from fastapi import FastAPI, Depends
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++call_count = 0
++
++def dep_d():
++    global call_count
++    call_count += 1
++    return "d"
++
++def dep_a(d = Depends(dep_d, scope="function")):
++    return d
++
++def dep_b(d = Depends(dep_d, scope="function")):
++    return d
++
++@app.get("/")
++def root(a = Depends(dep_a), b = Depends(dep_b)):
++    return {"message": "Hello World"}
++
++client = TestClient(app)
++call_count = 0
++client.get("/")
++print(f"Call count: {call_count}")
++assert call_count == 2
+diff --git a/repro_scope.py b/repro_scope.py
+new file mode 100644
+index 00000000..67d2a37c
+--- /dev/null
++++ b/repro_scope.py
+@@ -0,0 +1,45 @@
++import pytest
++from fastapi import FastAPI, Depends
++from fastapi.testclient import TestClient
++from fastapi.dependencies.utils import Dependant
++
++def test_scope_function_disables_cache():
++    app = FastAPI()
++    call_count = 0
++
++    def dependency():
++        nonlocal call_count
++        call_count += 1
++        return "value"
++
++    @app.get("/")
++    def root(dep1=Depends(dependency, scope="function"), dep2=Depends(dependency, scope="function")):
++        return {"dep1": dep1, "dep2": dep2}
++
++    client = TestClient(app)
++    response = client.get("/")
++    assert response.status_code == 200
++    assert call_count == 2
++
++def test_scope_request_enables_cache():
++    app = FastAPI()
++    call_count = 0
++
++    def dependency():
++        nonlocal call_count
++        call_count += 1
++        return "value"
++
++    @app.get("/")
++    def root(dep1=Depends(dependency, scope="request"), dep2=Depends(dependency, scope="request")):
++        return {"dep1": dep1, "dep2": dep2}
++
++    client = TestClient(app)
++    response = client.get("/")
++    assert response.status_code == 200
++    assert call_count == 1
++
++if __name__ == "__main__":
++    test_scope_function_disables_cache()
++    test_scope_request_enables_cache()
++    print("Tests passed!")

@@ -1,0 +1,74 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index c5c6b69b..ea1b77b4 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -129,7 +129,7 @@ def get_parameterless_sub_dependant(*, depends: params.Depends, path: str) -> De
+     if isinstance(depends, params.Security) and depends.scopes:
+         use_security_scopes.extend(depends.scopes)
+     return get_dependant(
+-        path=path, call=depends.dependency, security_scopes=use_security_scopes
++        path=path, call=depends.dependency, security_scopes=use_security_scopes, scope=depends.scope, use_cache=depends.use_cache
+     )
+ 
+ 
+@@ -232,6 +232,8 @@ def get_dependant(
+     use_cache: bool = True,
+     scope: Union[Literal["function", "request"], None] = None,
+ ) -> Dependant:
++    if scope == "function":
++        use_cache = False
+     dependant = Dependant(
+         call=call,
+         name=name,
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..618f9821
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,46 @@
++from fastapi import FastAPI, Depends
++from fastapi.testclient import TestClient
++
++def create_app(scope):
++    app = FastAPI()
++    call_count = 0
++
++    def dep1():
++        nonlocal call_count
++        call_count += 1
++        return 1
++
++    @app.get("/", dependencies=[Depends(dep1, scope=scope), Depends(dep1, scope=scope)])
++    async def root():
++        return {"message": "Hello World"}
++
++    return app, lambda: call_count
++
++def test_scope_function():
++    app, get_count = create_app("function")
++    client = TestClient(app)
++    client.get("/")
++    count = get_count()
++    print(f"scope='function': count={count}")
++    assert count == 2
++
++def test_scope_request():
++    app, get_count = create_app("request")
++    client = TestClient(app)
++    client.get("/")
++    count = get_count()
++    print(f"scope='request': count={count}")
++    assert count == 1
++
++if __name__ == "__main__":
++    try:
++        test_scope_function()
++        print("test_scope_function passed")
++    except Exception as e:
++        print(f"test_scope_function failed: {e}")
++
++    try:
++        test_scope_request()
++        print("test_scope_request passed")
++    except Exception as e:
++        print(f"test_scope_request failed: {e}")

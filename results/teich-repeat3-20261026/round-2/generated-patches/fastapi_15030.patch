@@ -1,0 +1,59 @@
+diff --git a/fastapi/responses.py b/fastapi/responses.py
+index 5b1154c0..e143c5c8 100644
+--- a/fastapi/responses.py
++++ b/fastapi/responses.py
+@@ -1,5 +1,7 @@
+ from typing import Any
+ 
++import json
++from fastapi.encoders import jsonable_encoder
+ from fastapi.exceptions import FastAPIDeprecationWarning
+ from starlette.responses import FileResponse as FileResponse  # noqa
+ from starlette.responses import HTMLResponse as HTMLResponse  # noqa
+@@ -82,3 +84,46 @@ class ORJSONResponse(JSONResponse):
+         return orjson.dumps(
+             content, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY
+         )
++
++
++class SSEResponse(StreamingResponse):
++    def __init__(
++        self,
++        content: Any,
++        status_code: int = 200,
++        headers: dict[str, str] | None = None,
++        background: Any = None,
++        media_type: str = "text/event-stream",
++    ) -> None:
++        headers = (headers or {}).copy()
++        headers.setdefault("Cache-Control", "no-cache")
++        headers.setdefault("Connection", "keep-alive")
++
++        def _serialize_sse_item(item: Any) -> bytes:
++            if isinstance(item, bytes):
++                return item
++            if isinstance(item, str):
++                return (
++                    "\n".join(f"data: {line}" for line in item.split("\n")) + "\n\n"
++                ).encode("utf-8")
++            data = jsonable_encoder(item)
++            return f"data: {json.dumps(data)}\n\n".encode("utf-8")
++
++        if hasattr(content, "__aiter__"):
++            async def async_wrapper():
++                async for item in content:
++                    yield _serialize_sse_item(item)
++            content = async_wrapper()
++        elif hasattr(content, "__iter__"):
++            def sync_wrapper():
++                for item in content:
++                    yield _serialize_sse_item(item)
++            content = sync_wrapper()
++
++        super().__init__(
++            content=content,
++            status_code=status_code,
++            headers=headers,
++            background=background,
++            media_type=media_type,
++        )

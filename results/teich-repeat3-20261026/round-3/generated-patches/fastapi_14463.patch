@@ -1,0 +1,75 @@
+diff --git a/fastapi/openapi/utils.py b/fastapi/openapi/utils.py
+index 75ff2610..d56027b5 100644
+--- a/fastapi/openapi/utils.py
++++ b/fastapi/openapi/utils.py
+@@ -1,3 +1,4 @@
++import copy
+ import http.client
+ import inspect
+ import warnings
+@@ -377,7 +378,7 @@ def get_openapi_path(
+                     additional_status_code,
+                     additional_response,
+                 ) in route.responses.items():
+-                    process_response = additional_response.copy()
++                    process_response = copy.deepcopy(additional_response)
+                     process_response.pop("model", None)
+                     status_code_key = str(additional_status_code).upper()
+                     if status_code_key == "DEFAULT":
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..780215ba
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,51 @@
++
++from pydantic import BaseModel
++from fastapi import FastAPI
++import json
++
++class ModelA(BaseModel):
++    a: str
++class ModelB(BaseModel):
++    b: str
++u = ModelA | ModelB
++
++app_responses = {
++    400: {
++        "model": u,
++        "content": {
++            "application/json": {
++                "examples": {"Case A": {"value": "a"}}
++            }
++        }
++    }
++}
++
++app = FastAPI(responses=app_responses)
++
++for i in range(10):
++    # We need to use a unique function name for each route
++    exec(f"""
++@app.get('/route{i}')
++def route{i}():
++    return {{'message': 'ok'}}
++""")
++
++schema = app.openapi()
++responses_400 = []
++for path in schema['paths'].values():
++    for method in path.values():
++        if 'responses' in method and '400' in method['responses']:
++            responses_400.append(method['responses']['400'])
++
++# Check if the anyOf list in the 400 response schema is duplicated
++# The schema is in responses_400[0]['content']['application/json']['schema']['anyOf']
++any_of_list = responses_400[0]['content']['application/json']['schema']['anyOf']
++print(f"anyOf list length: {len(any_of_list)}")
++for i in range(1, len(responses_400)):
++    any_of_list_i = responses_400[i]['content']['application/json']['schema']['anyOf']
++    print(f"route {i} anyOf list length: {len(any_of_list_i)}")
++
++if len(any_of_list) == 2:
++    print("SUCCESS: No duplication")
++else:
++    print(f"FAILURE: Duplication detected. Expected 2, got {len(any_of_list)}")

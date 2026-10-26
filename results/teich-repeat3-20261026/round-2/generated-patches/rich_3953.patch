@@ -1,0 +1,159 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..da37fa49
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,122 @@
++from rich.cells import cell_len, split_graphemes
++
++def test_cell_len():
++    # ZWJ at start
++    assert cell_len("\u200d A") == 2, f"ZWJ at start: expected 2, got {cell_len('\u200d A')}"
++    # ZWJ at end
++    assert cell_len("A\u200d") == 1, f"ZWJ at end: expected 1, got {cell_len('A\u200d')}"
++    # ZWJ in middle
++    assert cell_len("A\u200d B") == 2, f"ZWJ in middle: expected 2, got {cell_len('A\u200d B')}"
++    # ZWJ joining
++    # A is 1, ZWJ, B is 1. If joined, it's still 1 if B is not wide.
++    # Let's use something that is wide.
++    # Actually, ZWJ just skips the next character's width.
++    # If A is 1, ZWJ, B is 1 -> total 1.
++    assert cell_len("A\u200d B") == 2 # wait, A\u200d B is A, ZWJ, space, B.
++    # A\u200d B: A (1), ZWJ (joins space), B (1). Total 2.
++    # A\u200d B: A (1), ZWJ (joins B). Total 1.
++    assert cell_len("A\u200d B") == 2 # space is there.
++    assert cell_len("A\u200d B") == 2 # wait, I'm confusing myself.
++    # "A\u200d B" -> A, ZWJ, space, B.
++    # A: 1
++    # ZWJ: joins space. space is skipped.
++    # B: 1
++    # Total: 2.
++    # If ZWJ is at the end: "A\u200d" -> A: 1, ZWJ: joins nothing. Total 1.
++    # If ZWJ is at the start: "\u200d A" -> ZWJ: joins nothing, A: 1. Total 1.
++    # Wait, "\u200d A" should be 1.
++    # Let's check.
++    # "\u200d A" -> ZWJ, space, A.
++    # ZWJ: joins space. space is skipped.
++    # A: 1.
++    # Total: 1.
++    # Wait, if ZWJ is at the start, it should join the next character.
++    # But my fix says: if last_measured_character is None, it doesn't join.
++    # Is this correct?
++    # ZWJ (U+200D) is used to join two characters. If there is no first character, it can't join.
++    # So it should be treated as a zero-width character.
++    # Then the next character should be measured.
++    # So "\u200d A" -> ZWJ (0), space (1), A (1). Total 2.
++    # If it joined the space, it would be 1.
++    # But ZWJ at the start of a string is usually invalid or treated as zero-width.
++    # Let's see what rich did before.
++    # Before: it called next(iter_characters) blindly.
++    # So "\u200d A" -> ZWJ, next() returns space. space is skipped. A is 1. Total 1.
++    # This was the bug.
++    # So with my fix: "\u200d A" -> ZWJ (0), space (1), A (1). Total 2.
++    # This is correct.
++
++    # Let's test "A\u200d B"
++    # A: 1
++    # ZWJ: joins space. space is skipped.
++    # B: 1
++    # Total: 2.
++    # If we didn't have ZWJ: "A B" -> A (1), space (1), B (1). Total 3.
++    # So ZWJ did its job.
++
++    # Let's test "A\u200d B" where B is wide.
++    # A: 1
++    # ZWJ: joins B. B is skipped.
++    # Total: 1.
++    # Wait, if B is wide, it's still skipped.
++    # Let's use a wide character.
++    # \u1F600 is 2.
++    # "A\u200d\u1F600" -> A (1), ZWJ (joins \u1F600), \u1F600 is skipped.
++    # Total: 1.
++    # If no ZWJ: "A\u1F600" -> A (1), \u1F600 (2). Total 3.
++    # So ZWJ did its job.
++
++    # Let's test "A\u200d"
++    # A: 1
++    # ZWJ: joins nothing.
++    # Total: 1.
++    # Before: StopIteration.
++
++    # Let's test "\u200d"
++    # ZWJ: joins nothing.
++    # Total: 0.
++    # Before: next() called, StopIteration.
++
++    print("cell_len tests passed")
++
++def test_split_graphemes():
++    # ZWJ at start
++    spans, width = split_graphemes("\u200d A")
++    # ZWJ (0), space (1), A (1).
++    # spans should be [(1, 2, 1), (2, 3, 1)]
++    # width should be 2.
++    assert width == 2
++    assert spans == [(1, 2, 1), (2, 3, 1)]
++
++    # ZWJ at end
++    spans, width = split_graphemes("A\u200d")
++    # A (1), ZWJ (0).
++    # spans should be [(0, 2, 1)]
++    # width should be 1.
++    print(f"A\u200d spans: {spans}, width: {width}")
++    assert width == 1
++    assert spans == [(0, 2, 1)]
++
++    # ZWJ in middle
++    spans, width = split_graphemes("A\u200d B")
++    # A (1), ZWJ (joins space), B (1).
++    # spans should be [(0, 3, 1), (3, 4, 1)]
++    # width should be 2.
++    assert width == 2
++    assert spans == [(0, 3, 1), (3, 4, 1)]
++
++    # ZWJ joining wide character
++    spans, width = split_graphemes("A\u200d\u1F600")
++    # A (1), ZWJ (joins \u1F600).
++    # \u1F600 is wide (2).
++    # If joined, it's still 1?
++    # Let's check what rich does.
++    print(f"A\\u200d\\u1F600 spans: {spans}, width: {width}")
++    assert width == 1
++    assert spans == [(0, 3, 1)]
++
++    print("split_graphemes tests passed")
++
++if __name__ == "__main__":
++    test_cell_len()
++    test_split_graphemes()
+diff --git a/rich/cells.py b/rich/cells.py
+index 15fe7b65..e4831fba 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -140,7 +140,11 @@ def _cell_len(text: str, unicode_version: str) -> int:
+     for character in iter_characters:
+         if character in SPECIAL:
+             if character == "\u200d":
+-                next(iter_characters)
++                if last_measured_character:
++                    try:
++                        next(iter_characters)
++                    except StopIteration:
++                        pass
+             elif last_measured_character:
+                 total_width += last_measured_character in cell_table.narrow_to_wide
+                 last_measured_character = None
+@@ -177,10 +181,12 @@ def split_graphemes(
+         if (character := text[index]) in SPECIAL:
+             if character == "\u200d":
+                 # zero width joiner
+-                index += 2
+                 if spans:
++                    index += 2 if index + 1 < codepoint_count else 1
+                     start, _end, cell_length = spans[-1]
+                     spans[-1] = (start, index, cell_length)
++                else:
++                    index += 1
+             elif last_measured_character:
+                 # variation selector 16
+                 index += 1

@@ -1,0 +1,82 @@
+diff --git a/src/requests/sessions.py b/src/requests/sessions.py
+index 578cc44d..adf498f4 100644
+--- a/src/requests/sessions.py
++++ b/src/requests/sessions.py
+@@ -179,9 +179,9 @@ class SessionRedirectMixin:
+             prepared_request = req.copy()
+ 
+             # Update history and keep track of redirects.
+-            # resp.history must ignore the original request in this loop
++            # resp.history must ignore the current response in this loop
+             hist.append(resp)
+-            resp.history = hist[1:]
++            resp.history = hist[:-1]
+ 
+             try:
+                 resp.content  # Consume socket so it can be released
+diff --git a/verify_fix.py b/verify_fix.py
+new file mode 100644
+index 00000000..6aca73da
+--- /dev/null
++++ b/verify_fix.py
+@@ -0,0 +1,60 @@
++
++import requests
++from requests.sessions import Session
++from requests.exceptions import TooManyRedirects
++
++def test_self_reference():
++    s = Session()
++    s.max_redirects = 2
++    
++    from requests.adapters import HTTPAdapter
++    from requests.models import Response
++    from requests.structures import CaseInsensitiveDict
++
++    class MockAdapter(HTTPAdapter):
++        def send(self, request, **kwargs):
++            if not hasattr(self, 'count'):
++                self.count = 0
++            self.count += 1
++            
++            resp = Response()
++            resp.request = request
++            resp.status_code = 302
++            resp.headers = CaseInsensitiveDict({'Location': 'http://redirect.com'})
++            resp.url = 'http://redirect.com'
++            
++            class MockRaw:
++                def read(self, *args, **kwargs): return b''
++                def __close__(self): pass
++            resp.raw = MockRaw()
++            
++            return resp
++
++    s.mount('http://', MockAdapter())
++    
++    try:
++        s.get('http://redirect.com')
++    except TooManyRedirects as e:
++        resp = e.response
++        print(f"Response ID: {id(resp)}")
++        print(f"History IDs: {[id(r) for r in resp.history]}")
++        if resp in resp.history:
++            print("Self-reference found!")
++            return False
++        
++        if len(resp.history) != 2:
++            print(f"Unexpected history length: {len(resp.history)}")
++            return False
++        
++        print("No self-reference found and history length is correct.")
++        return True
++    except Exception as e:
++        print(f"Unexpected exception: {e}")
++        return False
++
++if __name__ == '__main__':
++    if test_self_reference():
++        print("SUCCESS")
++    else:
++        print("FAILURE")
++        exit(1)

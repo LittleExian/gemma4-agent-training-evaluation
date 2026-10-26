@@ -1,0 +1,82 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 91348c8e..76cced35 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -17,6 +17,7 @@ from typing import (
+     Type,
+     Union,
+     cast,
++    get_type_hints,
+ )
+ 
+ import anyio
+@@ -194,12 +195,16 @@ def get_typed_signature(call: Callable[..., Any]) -> inspect.Signature:
+     signature = inspect.signature(call)
+     unwrapped = inspect.unwrap(call)
+     globalns = getattr(unwrapped, "__globals__", {})
++    try:
++        hints = get_type_hints(call, globalns=globalns)
++    except Exception:
++        hints = {}
+     typed_params = [
+         inspect.Parameter(
+             name=param.name,
+             kind=param.kind,
+             default=param.default,
+-            annotation=get_typed_annotation(param.annotation, globalns),
++            annotation=hints.get(param.name, get_typed_annotation(param.annotation, globalns)),
+         )
+         for param in signature.parameters.values()
+     ]
+@@ -225,6 +230,12 @@ def get_typed_return_annotation(call: Callable[..., Any]) -> Any:
+         return None
+ 
+     globalns = getattr(unwrapped, "__globals__", {})
++    try:
++        hints = get_type_hints(call, globalns=globalns)
++        if "return" in hints:
++            return hints["return"]
++    except Exception:
++        pass
+     return get_typed_annotation(annotation, globalns)
+ 
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..891dd765
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,33 @@
++
++from __future__ import annotations
++from fastapi import FastAPI
++from fastapi.dependencies.utils import get_typed_return_annotation, get_typed_signature
++import inspect
++
++class MyClass:
++    pass
++
++def foo(a: MyClass) -> MyClass:
++    return a
++
++def test_return_annotation():
++    print(f"foo.__annotations__: {foo.__annotations__}")
++    print(f"Return annotation: {get_typed_return_annotation(foo)}")
++    assert get_typed_return_annotation(foo) is MyClass
++
++def test_signature():
++    sig = get_typed_signature(foo)
++    param_a = sig.parameters['a']
++    print(f"Param a annotation: {param_a.annotation}")
++    assert param_a.annotation is MyClass
++
++if __name__ == "__main__":
++    try:
++        test_return_annotation()
++        test_signature()
++        print("Success!")
++    except Exception as e:
++        print(f"Failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

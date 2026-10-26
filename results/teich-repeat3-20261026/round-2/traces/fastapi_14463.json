@@ -1,0 +1,856 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "agent": {
+    "name": "adk-eval-core",
+    "version": "1.0"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "system",
+      "message": "You are an expert autonomous software engineer assigned to resolve an issue in a repository efficiently and decisively.\n\n## Core Objective: Fast, Minimal, and Precise Fixes\nAim to understand, resolve, and submit the fix in the minimum number of tool calls (under 8–10 turns). Move directly from the problem statement to the relevant files, apply the solution, verify with a targeted test, and submit.\n\n## Workflow\n\n### 1. Identify Target Files Immediately\n- Extract filenames, functions, classes, CLI subcommands, or error messages directly from the problem statement.\n- Read only the specific target files and lines using `read_file` or search tools. Do not wander across unrelated files.\n- If the problem statement does not provide explicit file paths, search for its most specific identifier or error string with `git grep -n \"text\" -- '*.py' | head -20`.\n- Do not use `search_similar_code`, `get_code_neighbors` or `get_code_subgraph`: they only accept exact fully-qualified ids and usually return nothing.\n\n### 2. Implement the Solution Directly\n- Apply the minimal necessary fix or feature directly to the source files using `edit_file` or `write_file`.\n- Strictly adhere to specified error strings, exception types, HTTP status codes, and API signatures.\n- For documentation code tasks (e.g. FastAPI), edit executable code under `docs_src/`.\n\n### 3. Run Targeted Tests Only (Existing Tests May Be Broken)\n- **Run ONLY Targeted Tests**: Run only the specific test file or test method directly verifying the bug or feature you modified (e.g. `pytest tests/test_target.py -k test_feature` or `python3 -m unittest tests.test_target`).\n- **Be Aware That Existing Tests May Be Broken**: Many repositories contain pre-existing test breakages, missing test data fixtures (e.g. `/test_data`), or environment import errors unrelated to your task.\n- **Do NOT Attempt to Fix Existing Tests**: If an existing test fails due to pre-existing repository issues or missing fixtures, IGNORE IT. Never spend turns attempting to repair pre-existing test failures, create test stubs, or alter test code.\n- **STRICT RULE: NEVER Run Bare Pytest or Full-Repo Sweeps**: NEVER run bare `pytest`, `pytest .`, `python3 -m unittest discover`, or full-repo test suites without specifying a target file. Full test suites take several minutes, cause catastrophic timeouts, and exhaust your turn and time budgets.\n- If you need to locate the test file, find it explicitly with `find tests -name \"*<name>*.py\"` instead of running the test runner across the repo.\n\n### 4. Immediate Patch Submission\n- Once your targeted test passes:\n  1. Call `submit_patch` immediately.\n  2. Verify `patch_size > 0` and `files_changed > 0`.\n  3. Output a short summary of the fix to end the session.\n\n## Budget: 56 tool calls, 15.000000 minutes\n- You have at most 56 tool calls and 15.000000 minutes for this task. When either runs out, the working tree is graded as it is, so an edit made in time counts even if you never reach `submit_patch`.\n- Use at most about 10 tool calls to find and read the code.\n- By your 12th tool call you must have edited a source file. If you have not, stop exploring and make your best-guess edit in the most likely place now. Runs that are still only reading after 12 calls almost never succeed; more reading does not help.\n- After your edit: one compile check or one targeted test, a correction if needed, then `submit_patch`. Do not start new exploration after your 20th tool call.\n\n## Anti-Patterns to Avoid\n- **NEVER modify, create, or delete test files** (`*_test.py`, `test_*.py`, or anything under `tests/`). All changes must be to source implementation files. Modifying tests results in an automatic evaluation failure.\n- **NEVER run full repository test suites** (e.g., bare `pytest` or `pytest .`) — always specify the exact test file path.\n- **NEVER attempt to fix or repair existing tests or pre-existing repository breakages** — your task is strictly to implement the fix for the reported issue in source code.\n- **NEVER search outside `/workspace`** for source files or packages (e.g., `/usr/local/lib/`, `/wheels/`, `/opt/`). All repository code and test dependencies are pre-installed. If `ModuleNotFoundError` occurs during test runs, focus on fixing code under `/workspace`, not looking for missing system packages.\n- Do NOT spend turns running broad exploratory searches if the file path or symbol is obvious.\n- Do NOT refactor or reformat unrelated functions or files.\n- Do NOT conclude without submitting a non-empty patch (`patch_size > 0`). Every task requires concrete source modifications. Concluding that the codebase is already clean without making changes is an anti-pattern.",
+      "extra": {
+        "event_type": "system_instruction",
+        "elapsed_s": 2.6820101737976074,
+        "timestamp": 1793000847.6742299,
+        "author": "harness"
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "user",
+      "message": "[BENCHMARK_PROBLEM_STATEMENT_OMITTED_FROM_PUBLIC_EXPORT]",
+      "extra": {
+        "event_type": "task_prompt",
+        "elapsed_s": 2.682016611099243,
+        "timestamp": 1793000847.6742363,
+        "author": "harness"
+      },
+      "message_source_sha256": "77e9d35bcd78ae623bc4078475c7599bb0f243bc449973bf0523befd487c679e",
+      "message_source_characters": 14063,
+      "public_omission_reason": "Benchmark task text is not included in this agent-output publication."
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "The user is reporting an issue where OpenAPI duplication of `anyOf` refs occurs for app-level responses with specified `content` and `model` as `Union`.\nThe root cause is identified as a shallow copy of `additional_response` in `fastapi/openapi/utils.py`, which leads to the same `content` dictionary being shared across all routes. When `deep_dict_update` is called, it appends to the `anyOf` list in the shared `content` dictionary.\n\nLet's start by reproducing the issue. I'll create a reproduction script based on the provided example.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_3",
+          "function_name": "write_file",
+          "arguments": {
+            "content": "from fastapi import FastAPI\nfrom pydantic import BaseModel\nimport json\n\nclass ModelA(BaseModel):\n    a: str\n\nclass ModelB(BaseModel):\n    b: str\n\napp = FastAPI(\n    responses={\n        500: {\n            'model': ModelA | ModelB,\n            'content': {\"application/json\": {\n                'examples': {\"Case A\": {\"value\": \"a\"}}\n            }}\n        }\n    }\n)\n\n@app.get('/route1')\ndef route1():\n    return \"test\"\n\n@app.get('/route2')\ndef route2():\n    return \"test\"\n\n@app.get('/route3')\ndef route3():\n    return \"test\"\n\nopenapi_schema = app.openapi()\nresponses_500_route1 = openapi_schema[\"paths\"][\"/route1\"][\"get\"][\"responses\"][\"500\"][\"content\"][\"application/json\"][\"schema\"][\"anyOf\"]\nprint(f\"Route 1 anyOf length: {len(responses_500_route1)}\")\nprint(json.dumps(responses_500_route1, indent=2))\n\n# Check if they are duplicated\n# For 3 routes, if it's duplicated, we expect 3 * 2 = 6 elements in anyOf\nif len(responses_500_route1) > 2:\n    print(\"BUG REPRODUCED: anyOf contains duplicate refs\")\nelse:\n    print(\"BUG NOT REPRODUCED\")\n",
+            "filepath": "reproduce_issue.py"
+          },
+          "extra": {
+            "elapsed_s": 20.566556215286255,
+            "timestamp": 1793000865.558776,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"reproduce_issue.py\", \"size\": 1037}",
+        "extra": {
+          "tool_name": "write_file",
+          "elapsed_s": 20.620903968811035,
+          "timestamp": 1793000865.6131237,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 6636,
+        "completion_tokens": 494,
+        "cached_tokens": 0,
+        "total_tokens": 7130
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 20.566556215286255,
+        "timestamp": 1793000865.558776,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "agent",
+      "message": "Now run the reproduction script.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_6",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "python3 reproduce_issue.py"
+          },
+          "extra": {
+            "elapsed_s": 21.793723106384277,
+            "timestamp": 1793000866.7859428,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"Route 1 anyOf length: 6\\n[\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelA\\\"\\n  },\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelB\\\"\\n  },\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelA\\\"\\n  },\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelB\\\"\\n  },\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelA\\\"\\n  },\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelB\\\"\\n  }\\n]\\nBUG REPRODUCED: anyOf contains duplicate refs\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 22.618058919906616,
+          "timestamp": 1793000867.6102786,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 7167,
+        "completion_tokens": 32,
+        "cached_tokens": 0,
+        "total_tokens": 7199
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 21.793723106384277,
+        "timestamp": 1793000866.7859428,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "agent",
+      "message": "The bug is reproduced. Now let's examine the code in `fastapi/openapi/utils.py` around the lines mentioned in the problem statement.\nThe problem statement points to `fastapi/openapi/utils.py#L376-L416`.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_9",
+          "function_name": "read_file",
+          "arguments": {
+            "end_line": 420,
+            "filepath": "fastapi/openapi/utils.py",
+            "start_line": 370
+          },
+          "extra": {
+            "elapsed_s": 25.89580464363098,
+            "timestamp": 1793000870.8880243,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/openapi/utils.py\", \"content\": \"                    status_code, {}\\n                ).setdefault(\\\"content\\\", {}).setdefault(route_response_media_type, {})[\\n                    \\\"schema\\\"\\n                ] = response_schema\\n            if route.responses:\\n                operation_responses = operation.setdefault(\\\"responses\\\", {})\\n                for (\\n                    additional_status_code,\\n                    additional_response,\\n                ) in route.responses.items():\\n                    process_response = additional_response.copy()\\n                    process_response.pop(\\\"model\\\", None)\\n                    status_code_key = str(additional_status_code).upper()\\n                    if status_code_key == \\\"DEFAULT\\\":\\n                        status_code_key = \\\"default\\\"\\n                    openapi_response = operation_responses.setdefault(\\n                        status_code_key, {}\\n                    )\\n                    assert isinstance(process_response, dict), (\\n                        \\\"An additional response must be a dict\\\"\\n                    )\\n                    field = route.response_fields.get(additional_status_code)\\n                    additional_field_schema: Optional[dict[str, Any]] = None\\n                    if field:\\n                        additional_field_schema = get_schema_from_model_field(\\n                            field=field,\\n                            model_name_map=model_name_map,\\n                            field_mapping=field_mapping,\\n                            separate_input_output_schemas=separate_input_output_schemas,\\n                        )\\n                        media_type = route_response_media_type or \\\"application/json\\\"\\n                        additional_schema = (\\n                            process_response.setdefault(\\\"content\\\", {})\\n                            .setdefault(media_type, {})\\n                            .setdefault(\\\"schema\\\", {})\\n                        )\\n                        deep_dict_update(additional_schema, additional_field_schema)\\n                    status_text: Optional[str] = status_code_ranges.get(\\n                        str(additional_status_code).upper()\\n                    ) or http.client.responses.get(int(additional_status_code))\\n                    description = (\\n                        process_response.get(\\\"description\\\")\\n                        or openapi_response.get(\\\"description\\\")\\n                        or status_text\\n                        or \\\"Additional Response\\\"\\n                    )\\n                    deep_dict_update(openapi_response, process_response)\\n                    openapi_response[\\\"description\\\"] = description\\n            http422 = \\\"422\\\"\\n            all_route_params = get_flat_params(route.dependant)\\n            if (all_route_params or route.body_field) and not any(\", \"start_line\": 370, \"end_line\": 420, \"total_lines\": 567, \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "read_file",
+          "elapsed_s": 25.89780068397522,
+          "timestamp": 1793000870.8900204,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 7397,
+        "completion_tokens": 101,
+        "cached_tokens": 0,
+        "total_tokens": 7498
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 25.89580464363098,
+        "timestamp": 1793000870.8880243,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "agent",
+      "message": "Wait, the problem statement says:\n`process_response = additional_response.copy()` (line 380 in the linked code, line 384 in the current file)\n`additional_response` is taken from `route.responses.items()`.\n`route.responses` is shared across all routes if it's defined at the app level.\n`process_response` is a shallow copy of `additional_response`.\nIf `additional_response` contains a `content` dictionary, `process_response['content']` is the same object as `additional_response['content']`.\n\nThen, if `field` is present (which it is, because `model` was specified in `responses`), it does:\n```python\n                        additional_schema = (\n                            process_response.setdefault(\"content\", {})\n                            .setdefault(media_type, {})\n                            .setdefault(\"schema\", {})\n                        )\n                        deep_dict_update(additional_schema, additional_field_schema)\n```\n`process_response.setdefault(\"content\", {})` returns the shared `content` dictionary.\n`deep_dict_update(additional_schema, additional_field_schema)` modifies this shared dictionary.\n\nThe problem is that `process_response = additional_response.copy()` is a shallow copy. We need a deep copy of `additional_response` or at least a deep copy of `content` if it exists.\n\nWait, `additional_response` is a dict. If we use `copy.deepcopy(additional_response)`, it should solve the problem.\n\nLet's check if `copy` is imported in `fastapi/openapi/utils.py`.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_12",
+          "function_name": "read_file",
+          "arguments": {
+            "end_line": 50,
+            "filepath": "fastapi/openapi/utils.py",
+            "start_line": 1
+          },
+          "extra": {
+            "elapsed_s": 39.39426565170288,
+            "timestamp": 1793000884.3864853,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/openapi/utils.py\", \"content\": \"import http.client\\nimport inspect\\nimport warnings\\nfrom collections.abc import Sequence\\nfrom typing import Any, Optional, Union, cast\\n\\nfrom fastapi import routing\\nfrom fastapi._compat import (\\n    ModelField,\\n    Undefined,\\n    get_compat_model_name_map,\\n    get_definitions,\\n    get_schema_from_model_field,\\n    lenient_issubclass,\\n)\\nfrom fastapi.datastructures import DefaultPlaceholder\\nfrom fastapi.dependencies.models import Dependant\\nfrom fastapi.dependencies.utils import (\\n    _get_flat_fields_from_params,\\n    get_flat_dependant,\\n    get_flat_params,\\n    get_validation_alias,\\n)\\nfrom fastapi.encoders import jsonable_encoder\\nfrom fastapi.exceptions import FastAPIDeprecationWarning\\nfrom fastapi.openapi.constants import METHODS_WITH_BODY, REF_PREFIX\\nfrom fastapi.openapi.models import OpenAPI\\nfrom fastapi.params import Body, ParamTypes\\nfrom fastapi.responses import Response\\nfrom fastapi.types import ModelNameMap\\nfrom fastapi.utils import (\\n    deep_dict_update,\\n    generate_operation_id_for_path,\\n    is_body_allowed_for_status_code,\\n)\\nfrom pydantic import BaseModel\\nfrom starlette.responses import JSONResponse\\nfrom starlette.routing import BaseRoute\\nfrom typing_extensions import Literal\\n\\nvalidation_error_definition = {\\n    \\\"title\\\": \\\"ValidationError\\\",\\n    \\\"type\\\": \\\"object\\\",\\n    \\\"properties\\\": {\\n        \\\"loc\\\": {\\n            \\\"title\\\": \\\"Location\\\",\\n            \\\"type\\\": \\\"array\\\",\\n            \\\"items\\\": {\\\"anyOf\\\": [{\\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"integer\\\"}]},\\n        },\\n        \\\"msg\\\": {\\\"title\\\": \\\"Message\\\", \\\"type\\\": \\\"string\\\"},\", \"start_line\": 1, \"end_line\": 50, \"total_lines\": 567, \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "read_file",
+          "elapsed_s": 39.396581411361694,
+          "timestamp": 1793000884.388801,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 8147,
+        "completion_tokens": 399,
+        "cached_tokens": 0,
+        "total_tokens": 8546
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 39.39426565170288,
+        "timestamp": 1793000884.3864853,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "agent",
+      "message": "`copy` is not imported. I should import it.\n\nWait, maybe I can just copy the `content` dict if it exists?\n`process_response = additional_response.copy()`\nIf `process_response` has `content`, I can do `process_response[\"content\"] = copy.deepcopy(process_response[\"content\"])`.\n\nActually, `additional_response` can be quite complex. `deepcopy` is safer.\n\nLet's see if there's a better way.\nThe issue is that `additional_response` is shared.\nIf I use `copy.deepcopy(additional_response)`, it should be fine.\n\nLet's check where `deep_dict_update` is defined. It's in `fastapi/utils.py`.\n\nWait, if I use `deepcopy`, I need to import `copy`.\n\nLet's see if I can avoid `deepcopy` by just copying the `content` dict if it exists.\n```python\n                    process_response = additional_response.copy()\n                    if \"content\" in process_response:\n                        process_response[\"content\"] = copy.deepcopy(process_response[\"content\"])\n```\nBut `content` is a dict of dicts. So `copy.deepcopy` is still needed.\n\nLet's just import `copy` and use `copy.deepcopy(additional_response)`.\n\nWait, is there any reason NOT to use `deepcopy`? Performance?\n`additional_response` is usually small.\n\nLet's check if `copy` is used elsewhere in the repo.\n\nActually, I can just use `process_response = additional_response.copy()` and then if `content` is present, I can do a deep copy of it.\n\nWait, if I use `copy.deepcopy(additional_response)`, I'm copying everything.\n\nLet's see if `additional_response` can contain anything that shouldn't be deepcopied.\nIt's a dict that can contain `model`, `content`, `description`.\n`model` is a Pydantic model or Union of models.\n`content` is a dict of dicts.\n`description` is a string.\n\nDeepcopying a Pydantic model might be expensive or problematic?\nBut `process_response.pop(\"model\", None)` is called immediately after.\n\nSo if I do:\n```python\n                    process_response = additional_response.copy()\n                    process_response.pop(\"model\", None)\n                    if \"content\" in process_response:\n                        process_response[\"content\"] = copy.deepcopy(process_response[\"content\"])\n```\nThis would avoid deepcopying the `model` if it's large.\n\nWait, `process_response = additional_response.copy()` is a shallow copy.\nThen `process_response.pop(\"model\", None)` removes the reference to the model from `process_response`, but not from `additional_response`.\n\nThen if `content` is in `process_response`, it's the same `content` as in `additional_response`.\nIf I deepcopy it, I'm safe.\n\nLet's check if `copy` is already available. No, it's not.\n\nI'll add `import copy` at the top of `fastapi/openapi/utils.py`.\n\nWait, I should check if `additional_response` is always a dict.\n`assert isinstance(process_response, dict), (\"An additional response must be a dict\")`\nYes, it is.\n\nLet's try to implement the fix.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_15",
+          "function_name": "edit_file",
+          "arguments": {
+            "filepath": "fastapi/openapi/utils.py",
+            "new_string": "import copy\nimport http.client\nimport inspect\n",
+            "old_string": "import http.client\nimport inspect\n"
+          },
+          "extra": {
+            "elapsed_s": 67.41542410850525,
+            "timestamp": 1793000912.4076438,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/openapi/utils.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/fastapi/openapi/utils.py\\n+++ b/fastapi/openapi/utils.py\\n@@ -1,3 +1,4 @@\\n+import copy\\n import http.client\\n import inspect\\n import warnings\\n\", \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "edit_file",
+          "elapsed_s": 67.41867589950562,
+          "timestamp": 1793000912.4108956,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 9049,
+        "completion_tokens": 832,
+        "cached_tokens": 0,
+        "total_tokens": 9881
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 67.41542410850525,
+        "timestamp": 1793000912.4076438,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "agent",
+      "message": "---\nWait, I should check if I can just use `copy.deepcopy` on `additional_response` before popping `model`.\nActually, if I do `process_response = copy.deepcopy(additional_response)`, it's simpler.\n\nLet's see:\n```python\n                    process_response = additional_response.copy()\n                    process_response.pop(\"model\", None)\n```\nIf I change it to:\n```python\n                    process_response = copy.deepcopy(additional_response)\n                    process_response.pop(\"model\", None)\n```\nThis should work and be clean.\n\nWait, is `additional_response` always deep-copyable?\nIt's a dict that comes from `route.responses`.\n`route.responses` is a dict of dicts.\nThe values in `route.responses` are the `additional_response` dicts.\nThey can contain `model`, `content`, `description`.\nPydantic models are deep-copyable.\n\nLet's try this.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_18",
+          "function_name": "edit_file",
+          "arguments": {
+            "filepath": "fastapi/openapi/utils.py",
+            "new_string": "                    process_response = copy.deepcopy(additional_response)\n                    process_response.pop(\"model\", None)\n",
+            "old_string": "                    process_response = additional_response.copy()\n                    process_response.pop(\"model\", None)\n"
+          },
+          "extra": {
+            "elapsed_s": 78.82918190956116,
+            "timestamp": 1793000923.8214016,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/openapi/utils.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/fastapi/openapi/utils.py\\n+++ b/fastapi/openapi/utils.py\\n@@ -378,7 +378,7 @@\\n                     additional_status_code,\\n                     additional_response,\\n                 ) in route.responses.items():\\n-                    process_response = additional_response.copy()\\n+                    process_response = copy.deepcopy(additional_response)\\n                     process_response.pop(\\\"model\\\", None)\\n                     status_code_key = str(additional_status_code).upper()\\n                     if status_code_key == \\\"DEFAULT\\\":\\n\", \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "edit_file",
+          "elapsed_s": 78.8322696685791,
+          "timestamp": 1793000923.8244894,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 9992,
+        "completion_tokens": 313,
+        "cached_tokens": 0,
+        "total_tokens": 10305
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 78.82918190956116,
+        "timestamp": 1793000923.8214016,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "agent",
+      "message": "Now let's run the reproduction script again.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_21",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "python3 reproduce_issue.py"
+          },
+          "extra": {
+            "elapsed_s": 80.18184995651245,
+            "timestamp": 1793000925.1740696,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"Route 1 anyOf length: 2\\n[\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelA\\\"\\n  },\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelB\\\"\\n  }\\n]\\nBUG NOT REPRODUCED\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 80.48974514007568,
+          "timestamp": 1793000925.4819648,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 10501,
+        "completion_tokens": 36,
+        "cached_tokens": 0,
+        "total_tokens": 10537
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 80.18184995651245,
+        "timestamp": 1793000925.1740696,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "agent",
+      "message": "The bug is not reproduced anymore.\n\nWait, I should check if this change has any side effects.\n`additional_response` is a dict. `copy.deepcopy` will create a completely new copy of it.\nThe original code used `.copy()`, which is a shallow copy.\nThe problem was that `content` was a nested dict, and it was being modified in place.\nBy using `deepcopy`, we ensure that `content` is also copied.\n\nIs there any other place where `additional_response` is modified?\nIn `fastapi/openapi/utils.py`:\n```python\n                        additional_schema = (\n                            process_response.setdefault(\"content\", {})\n                            .setdefault(media_type, {})\n                            .setdefault(\"schema\", {})\n                        )\n                        deep_dict_update(additional_schema, additional_field_schema)\n```\nThis modifies `process_response`. Since `process_response` is now a deep copy, it doesn't affect `additional_response` (and thus doesn't affect other routes).\n\nThen:\n```python\n                    deep_dict_update(openapi_response, process_response)\n```\nThis updates `openapi_response` with `process_response`.\n\nThis seems correct.\n\nOne thing to consider: is `deepcopy` too slow?\n`additional_response` is typically small. It's only processed once per route per OpenAPI generation.\nThe number of routes is usually not so large that `deepcopy` would be a bottleneck.\n\nLet's double check if there are any other potential issues.\nThe problem statement mentioned:\n`deep_dict_update()` will combine `anyOf` segments together:\nhttps://github.com/fastapi/fastapi/blob/f0dd1046a688935ffd23666b3d4164b838a4d8fe/fastapi/utils.py#L227-L242\n\nLet's look at `deep_dict_update` in `fastapi/utils.py`.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_24",
+          "function_name": "read_file",
+          "arguments": {
+            "end_line": 250,
+            "filepath": "fastapi/utils.py",
+            "start_line": 220
+          },
+          "extra": {
+            "elapsed_s": 96.76002931594849,
+            "timestamp": 1793000941.752249,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"error\", \"error_type\": \"ValueError\", \"error_message\": \"start_line (220) cannot be greater than end_line (164)\", \"details\": {}}",
+        "extra": {
+          "tool_name": "read_file",
+          "elapsed_s": 96.76194787025452,
+          "timestamp": 1793000941.7541676,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 10646,
+        "completion_tokens": 491,
+        "cached_tokens": 0,
+        "total_tokens": 11137
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 96.76002931594849,
+        "timestamp": 1793000941.752249,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "agent",
+      "message": "Wait, I might have the wrong line numbers. Let me search for `deep_dict_update` in `fastapi/utils.py`.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_27",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep -n \"def deep_dict_update\" fastapi/utils.py"
+          },
+          "extra": {
+            "elapsed_s": 98.95474553108215,
+            "timestamp": 1793000943.9469652,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"131:def deep_dict_update(main_dict: dict[Any, Any], update_dict: dict[Any, Any]) -> None:\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 99.0027847290039,
+          "timestamp": 1793000943.9950044,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 11192,
+        "completion_tokens": 65,
+        "cached_tokens": 0,
+        "total_tokens": 11257
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 98.95474553108215,
+        "timestamp": 1793000943.9469652,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "agent",
+      "message": "Okay, it's at line 131. Let's read it.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_30",
+          "function_name": "read_file",
+          "arguments": {
+            "end_line": 160,
+            "filepath": "fastapi/utils.py",
+            "start_line": 131
+          },
+          "extra": {
+            "elapsed_s": 100.95472931861877,
+            "timestamp": 1793000945.946949,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/utils.py\", \"content\": \"def deep_dict_update(main_dict: dict[Any, Any], update_dict: dict[Any, Any]) -> None:\\n    for key, value in update_dict.items():\\n        if (\\n            key in main_dict\\n            and isinstance(main_dict[key], dict)\\n            and isinstance(value, dict)\\n        ):\\n            deep_dict_update(main_dict[key], value)\\n        elif (\\n            key in main_dict\\n            and isinstance(main_dict[key], list)\\n            and isinstance(update_dict[key], list)\\n        ):\\n            main_dict[key] = main_dict[key] + update_dict[key]\\n        else:\\n            main_dict[key] = value\\n\\n\\ndef get_value_or_default(\\n    first_item: Union[DefaultPlaceholder, DefaultType],\\n    *extra_items: Union[DefaultPlaceholder, DefaultType],\\n) -> Union[DefaultPlaceholder, DefaultType]:\\n    \\\"\\\"\\\"\\n    Pass items or `DefaultPlaceholder`s by descending priority.\\n\\n    The first one to _not_ be a `DefaultPlaceholder` will be returned.\\n\\n    Otherwise, the first item (a `DefaultPlaceholder`) will be returned.\\n    \\\"\\\"\\\"\\n    items = (first_item,) + extra_items\", \"start_line\": 131, \"end_line\": 160, \"total_lines\": 164, \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "read_file",
+          "elapsed_s": 100.95655918121338,
+          "timestamp": 1793000945.9487789,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 11337,
+        "completion_tokens": 59,
+        "cached_tokens": 0,
+        "total_tokens": 11396
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 100.95472931861877,
+        "timestamp": 1793000945.946949,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "message": "Yes, `deep_dict_update` appends lists:\n```python\n        elif (\\n            key in main_dict\\n            and isinstance(main_dict[key], list)\\n            and isinstance(update_dict[key], list)\\n        ):\\n            main_dict[key] = main_dict[key] + update_dict[key]\\n```\nThis is exactly what was causing the duplication of `anyOf` (which is a list).\n\nBy using `deepcopy` on `additional_response`, we ensure that `main_dict` (which is `additional_schema` in `fastapi/openapi/utils.py`) is not shared across routes.\n\nWait, `additional_schema` is:\n```python\n                        additional_schema = (\n                            process_response.setdefault(\"content\", {})\n                            .setdefault(media_type, {})\n                            .setdefault(\"schema\", {})\n                        )\n                        deep_dict_update(additional_schema, additional_field_schema)\n```\nIf `process_response` is a deep copy of `additional_response`, then `additional_schema` is a part of that deep copy.\n`deep_dict_update(additional_schema, additional_field_schema)` modifies `additional_schema` in place.\nSince `additional_schema` is not shared, it's fine.\n\nThen:\n```python\n                    deep_dict_update(openapi_response, process_response)\n```\n`openapi_response` is a part of `operation_responses`, which is a part of `operation`, which is a part of `paths`.\n`paths` is a part of the final `openapi_schema`.\n`openapi_response` is unique for each route.\n\nSo this fix is correct.\n\nLet's check if there are any other places where `additional_response.copy()` is used in `fastapi/openapi/utils.py`.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_33",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep -n \".copy()\" fastapi/openapi/utils.py"
+          },
+          "extra": {
+            "elapsed_s": 116.32704877853394,
+            "timestamp": 1793000961.3192685,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"details\": {\"stdout\": \"\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 1}}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 116.39943265914917,
+          "timestamp": 1793000961.3916523,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 11771,
+        "completion_tokens": 445,
+        "cached_tokens": 0,
+        "total_tokens": 12216
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 116.32704877853394,
+        "timestamp": 1793000961.3192685,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "agent",
+      "message": "Wait, `grep` failed? Ah, I should use `grep -n \".copy()\" fastapi/openapi/utils.py` but maybe the shell is acting up. Let's try again.\nActually, I can just use `read_file` and search.\nWait, I already saw line 384. Let's see if there are others.\nI'll use `grep` again but without the dot if it's problematic.\nActually, `grep -n \"copy()\" fastapi/openapi/utils.py` should work.\nWait, the error was \"Landlock filesystem confinement active (ABI 4)\". That's not a grep error, that's just a message from the environment. The exit code was 1.\nMaybe it's because `.copy()` has a dot and I didn't escape it? No, `grep` treats `.` as any character.\n\nLet's try:",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_36",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep -n \"copy()\" fastapi/openapi/utils.py"
+          },
+          "extra": {
+            "elapsed_s": 123.80854105949402,
+            "timestamp": 1793000968.8007607,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"details\": {\"stdout\": \"\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 1}}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 124.13230991363525,
+          "timestamp": 1793000969.1245296,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 12290,
+        "completion_tokens": 229,
+        "cached_tokens": 0,
+        "total_tokens": 12519
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 123.80854105949402,
+        "timestamp": 1793000968.8007607,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "agent",
+      "message": "That's strange. Let's try `grep \"copy()\" fastapi/openapi/utils.py`.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_39",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep \"copy()\" fastapi/openapi/utils.py"
+          },
+          "extra": {
+            "elapsed_s": 125.82670640945435,
+            "timestamp": 1793000970.818926,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"details\": {\"stdout\": \"\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 1}}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 125.87675905227661,
+          "timestamp": 1793000970.8689787,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 12593,
+        "completion_tokens": 52,
+        "cached_tokens": 0,
+        "total_tokens": 12645
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 125.82670640945435,
+        "timestamp": 1793000970.818926,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "agent",
+      "message": "Maybe `copy()` is not used anywhere else.\nLet's try `grep \"copy\" fastapi/openapi/utils.py`.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_42",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep \"copy\" fastapi/openapi/utils.py"
+          },
+          "extra": {
+            "elapsed_s": 127.84612274169922,
+            "timestamp": 1793000972.8383424,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"import copy\\n                    process_response = copy.deepcopy(additional_response)\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 127.89499878883362,
+          "timestamp": 1793000972.8872185,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 12719,
+        "completion_tokens": 58,
+        "cached_tokens": 0,
+        "total_tokens": 12777
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 127.84612274169922,
+        "timestamp": 1793000972.8383424,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "agent",
+      "message": "Okay, so only the one I changed.\n\nWait, I should check if `additional_response` is used anywhere else.\nIt's a local variable in the loop.\n\nLet's check if there are any other similar patterns in `fastapi/openapi/utils.py`.\nI'll search for `setdefault(\"content\", {})`.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_45",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep -n \"setdefault(\\\"content\\\", {})\" fastapi/openapi/utils.py"
+          },
+          "extra": {
+            "elapsed_s": 131.5884280204773,
+            "timestamp": 1793000976.5806477,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"372:                ).setdefault(\\\"content\\\", {}).setdefault(route_response_media_type, {})[\\n403:                            process_response.setdefault(\\\"content\\\", {})\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 131.6413059234619,
+          "timestamp": 1793000976.6335256,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 12840,
+        "completion_tokens": 110,
+        "cached_tokens": 0,
+        "total_tokens": 12950
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 131.5884280204773,
+        "timestamp": 1793000976.5806477,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "agent",
+      "message": "Line 372:\n```python\n                ).setdefault(\"content\", {}).setdefault(route_response_media_type, {})[\n                    \"schema\"\n                ] = response_schema\n```\nThis is for the main response of the route.\n`route_response_media_type` is a string.\nThe object it's called on is `operation_responses.setdefault(status_code_key, {})`.\n`operation_responses` is `operation.setdefault(\"responses\", {})`.\n`operation` is unique for each route.\nSo this is not shared.\n\nLine 403:\n```python\n                        additional_schema = (\n                            process_response.setdefault(\"content\", {})\n                            .setdefault(media_type, {})\n                            .setdefault(\"schema\", {})\n                        )\n```\nThis is the one I fixed.\n\nSo it seems the fix is complete.\n\nLet's run the reproduction script one last time to be sure.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_48",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "python3 reproduce_issue.py"
+          },
+          "extra": {
+            "elapsed_s": 139.42712903022766,
+            "timestamp": 1793000984.4193487,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"Route 1 anyOf length: 2\\n[\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelA\\\"\\n  },\\n  {\\n    \\\"$ref\\\": \\\"#/components/schemas/ModelB\\\"\\n  }\\n]\\nBUG NOT REPRODUCED\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 139.73924946784973,
+          "timestamp": 1793000984.7314692,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 13038,
+        "completion_tokens": 235,
+        "cached_tokens": 0,
+        "total_tokens": 13273
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 139.42712903022766,
+        "timestamp": 1793000984.4193487,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "agent",
+      "message": "The bug is fixed. I'll submit the patch.",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_51",
+          "function_name": "submit_patch",
+          "arguments": {},
+          "extra": {
+            "elapsed_s": 140.72317624092102,
+            "timestamp": 1793000985.715396,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"patch_size\": 1981, \"files_changed\": 2}",
+        "extra": {
+          "tool_name": "submit_patch",
+          "elapsed_s": 140.84162020683289,
+          "timestamp": 1793000985.83384,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 13382,
+        "completion_tokens": 26,
+        "cached_tokens": 0,
+        "total_tokens": 13408
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 140.72317624092102,
+        "timestamp": 1793000985.715396,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "agent",
+      "message": "---\nThe issue was caused by a shallow copy of `additional_response` in `fastapi/openapi/utils.py`, which led to the `content` dictionary being shared across all routes when defined at the app level. This caused `deep_dict_update` to append duplicate `$ref` entries to the `anyOf` list in the shared `content` dictionary for each route.\n\nI fixed this by replacing `additional_response.copy()` with `copy.deepcopy(additional_response)`, ensuring that each route has its own independent copy of the response definition, including the nested `content` dictionary.\n\nVerified the fix with a reproduction script that showed the `anyOf` list length remained at 2 instead of growing with the number of routes.\n---",
+      "model_name": "gemma4_teich_agent",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_54",
+          "function_name": "submit_patch",
+          "arguments": {},
+          "extra": {
+            "elapsed_s": 146.14992427825928,
+            "timestamp": 1793000991.142144,
+            "author": "swe_agent",
+            "model_version": "gemma4_teich_agent"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"patch_size\": 1981, \"files_changed\": 2}",
+        "extra": {
+          "tool_name": "submit_patch",
+          "elapsed_s": 146.26624631881714,
+          "timestamp": 1793000991.258466,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 13443,
+        "completion_tokens": 169,
+        "cached_tokens": 0,
+        "total_tokens": 13612
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 146.14992427825928,
+        "timestamp": 1793000991.142144,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "agent",
+      "message": "Wait, I already called `submit_patch`. I should just finish.",
+      "model_name": "gemma4_teich_agent",
+      "metrics": {
+        "prompt_tokens": 13650,
+        "completion_tokens": 175,
+        "cached_tokens": 0,
+        "total_tokens": 13825
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 152.0632622241974,
+        "timestamp": 1793000997.055482,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "agent",
+      "message": "The issue was caused by a shallow copy of `additional_response` in `fastapi/openapi/utils.py`, which led to the `content` dictionary being shared across all routes when defined at the app level. This caused `deep_dict_update` to append duplicate `$ref` entries to the `anyOf` list in the shared `content` dictionary for each route.\n\nI fixed this by replacing `additional_response.copy()` with `copy.deepcopy(additional_response)`, ensuring that each route has its own independent copy of the response definition, including the nested `content` dictionary.\n\nVerified the fix with a reproduction script that showed the `anyOf` list length remained at 2 instead of growing with the number of routes.",
+      "model_name": "gemma4_teich_agent",
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "final",
+        "elapsed_s": 152.0632622241974,
+        "timestamp": 1793000997.055482,
+        "author": "swe_agent"
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 207790,
+    "total_completion_tokens": 4321,
+    "total_cached_tokens": 0,
+    "total_tokens": 212111,
+    "total_steps": 22
+  }
+}

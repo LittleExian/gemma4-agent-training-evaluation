@@ -1,0 +1,155 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index d43fa8a5..9f554e7d 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -871,6 +871,7 @@ async def _extract_form_body(
+     received_body: FormData,
+ ) -> Dict[str, Any]:
+     values = {}
++    processed_keys = set()
+ 
+     for field in body_fields:
+         value = _get_multidict_value(field, received_body)
+@@ -902,8 +903,9 @@ async def _extract_form_body(
+             value = serialize_sequence_value(field=field, value=results)
+         if value is not None:
+             values[field.alias] = value
++        processed_keys.add(field.alias)
+     for key, value in received_body.items():
+-        if key not in values:
++        if key not in processed_keys:
+             values[key] = value
+     return values
+ 
+diff --git a/repro_alias.py b/repro_alias.py
+new file mode 100644
+index 00000000..6d625869
+--- /dev/null
++++ b/repro_alias.py
+@@ -0,0 +1,32 @@
++from fastapi import FastAPI, Form
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.post("/form")
++async def read_form(q: str = Form(None, alias="query_param")):
++    return {"q": q}
++
++client = TestClient(app)
++
++def test_form_alias_empty_string():
++    # When query_param is an empty string and default is None, it should be None
++    response = client.post("/form", data={"query_param": ""})
++    print(f"Response: {response.json()}")
++    assert response.json() == {"q": None}
++
++def test_form_alias_value():
++    # When query_param has a value, it should be returned
++    response = client.post("/form", data={"query_param": "foo"})
++    print(f"Response: {response.json()}")
++    assert response.json() == {"q": "foo"}
++
++if __name__ == "__main__":
++    try:
++        test_form_alias_value()
++        test_form_alias_empty_string()
++        print("Tests passed!")
++    except AssertionError as e:
++        print(f"Tests failed: {e}")
++        exit(1)
+diff --git a/repro_form.py b/repro_form.py
+new file mode 100644
+index 00000000..fb6cb744
+--- /dev/null
++++ b/repro_form.py
+@@ -0,0 +1,25 @@
++from fastapi import FastAPI, Form
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.post("/form")
++async def read_form(q: str = Form(None)):
++    return {"q": q}
++
++client = TestClient(app)
++
++def test_form_empty_string():
++    # When q is an empty string and default is None, it should be None
++    response = client.post("/form", data={"q": ""})
++    print(f"Response: {response.json()}")
++    assert response.json() == {"q": None}
++
++if __name__ == "__main__":
++    try:
++        test_form_empty_string()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)
+diff --git a/repro_query.py b/repro_query.py
+new file mode 100644
+index 00000000..1f4cb49b
+--- /dev/null
++++ b/repro_query.py
+@@ -0,0 +1,25 @@
++from fastapi import FastAPI, Query
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.get("/query")
++async def read_query(q: str = Query(None)):
++    return {"q": q}
++
++client = TestClient(app)
++
++def test_query_empty_string():
++    # When q is an empty string and default is None, it should be None
++    response = client.get("/query?q=")
++    print(f"Response: {response.json()}")
++    assert response.json() == {"q": None}
++
++if __name__ == "__main__":
++    try:
++        test_query_empty_string()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++        exit(1)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..4a49cc66
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,26 @@
++from fastapi import FastAPI, Form
++from typing import Optional
++from fastapi.testclient import TestClient
++import pytest
++
++app = FastAPI()
++
++@app.post("/test")
++async def test(q: Optional[str] = Form(None)):
++    return {"q": q}
++
++client = TestClient(app)
++
++def test_empty_form_value():
++    # When q is missing, it should be None
++    response = client.post("/test", data={})
++    assert response.json() == {"q": None}
++
++    # When q is "", it should also be None because of _get_multidict_value's logic for Form
++    response = client.post("/test", data={"q": ""})
++    print(f"Response for q='': {response.json()}")
++    assert response.json() == {"q": None}
++
++if __name__ == "__main__":
++    test_empty_form_value()
++    print("Test passed!")

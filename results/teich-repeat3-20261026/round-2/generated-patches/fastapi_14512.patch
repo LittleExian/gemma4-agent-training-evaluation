@@ -1,0 +1,63 @@
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..d5caaf31
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,57 @@
++
++from typing import Literal, Union, Annotated
++from pydantic import BaseModel, Field
++from fastapi import FastAPI, Body
++from fastapi.testclient import TestClient
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++app = FastAPI()
++
++@app.post("/pet")
++async def create_pet(pet: Pet):
++    return pet
++
++client = TestClient(app)
++
++def test_tagged_union_body():
++    # Test Cat
++    response = client.post("/pet", json={"type": "cat", "meows": True})
++    assert response.status_code == 200
++    assert response.json() == {"type": "cat", "meows": True}
++
++    # Test Dog
++    response = client.post("/pet", json={"type": "dog", "barks": True})
++    assert response.status_code == 200
++    assert response.json() == {"type": "dog", "barks": True}
++
++    # Test discriminator: should fail because it matches 'cat' but 'meows' is missing
++    # If discriminator is working, it should only try Cat.
++    response = client.post("/pet", json={"type": "cat", "barks": True})
++    assert response.status_code == 422
++    print(f"Error for cat with barks: {response.json()}")
++    # If discriminator is working, we expect an error about 'meows' missing.
++    # If not, we might get a generic Union error.
++    assert "meows" in str(response.json())
++
++    # Test invalid type
++    response = client.post("/pet", json={"type": "bird", "wings": True})
++    assert response.status_code == 422
++
++if __name__ == "__main__":
++    try:
++        test_tagged_union_body()
++        print("Success!")
++    except Exception as e:
++        print(f"Failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

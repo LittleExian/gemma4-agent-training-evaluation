@@ -1,0 +1,96 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index b83bc1b5..9ad5df9f 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -218,6 +218,10 @@ def get_schema_from_model_field(
+     # This expects that GenerateJsonSchema was already used to generate the definitions
+     json_schema = field_mapping[(field, override_mode or field.mode)]
+     if "$ref" not in json_schema:
++        if isinstance(json_schema, dict) and json_schema.get("type") == "string" and json_schema.get("format") == "binary":
++            json_schema.pop("format")
++            json_schema["contentMediaType"] = "application/octet-stream"
++
+         # TODO remove when deprecating Pydantic v1
+         # Ref: https://github.com/pydantic/pydantic/blob/d61792cc42c80b13b23e3ffa74bc37ec7c77f7d1/pydantic/schema.py#L207
+         json_schema["title"] = field.field_info.title or field_alias.title().replace(
+@@ -282,6 +286,15 @@ def get_definitions(
+         if "description" in item_def:
+             item_description = cast(str, item_def["description"]).split("\f")[0]
+             item_def["description"] = item_description
++        if item_def.get("type") == "string" and item_def.get("format") == "binary":
++            item_def.pop("format")
++            item_def["contentMediaType"] = "application/octet-stream"
++
++    for schema in field_mapping.values():
++        if isinstance(schema, dict) and schema.get("type") == "string" and schema.get("format") == "binary":
++            schema.pop("format")
++            schema["contentMediaType"] = "application/octet-stream"
++
+     # definitions: dict[DefsRef, dict[str, Any]]
+     # but mypy complains about general str in other places that are not declared as
+     # DefsRef, although DefsRef is just str:
+diff --git a/fastapi/datastructures.py b/fastapi/datastructures.py
+index c04b5f0f..479e1a7c 100644
+--- a/fastapi/datastructures.py
++++ b/fastapi/datastructures.py
+@@ -139,7 +139,7 @@ class UploadFile(StarletteUploadFile):
+     def __get_pydantic_json_schema__(
+         cls, core_schema: Mapping[str, Any], handler: GetJsonSchemaHandler
+     ) -> dict[str, Any]:
+-        return {"type": "string", "format": "binary"}
++        return {"type": "string", "contentMediaType": "application/octet-stream"}
+ 
+     @classmethod
+     def __get_pydantic_core_schema__(
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..aa4b3cd5
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,14 @@
++from fastapi import FastAPI
++from pydantic import BaseModel
++import json
++
++app = FastAPI()
++
++class Model(BaseModel):
++    b: bytes
++
++@app.post("/test")
++def test(m: Model):
++    return m
++
++print(json.dumps(app.openapi(), indent=2))
+diff --git a/repro_bytes_file.py b/repro_bytes_file.py
+new file mode 100644
+index 00000000..afb961dc
+--- /dev/null
++++ b/repro_bytes_file.py
+@@ -0,0 +1,10 @@
++from fastapi import FastAPI, File
++import json
++
++app = FastAPI()
++
++@app.post("/test")
++def test(f: bytes = File()):
++    return f
++
++print(json.dumps(app.openapi(), indent=2))
+diff --git a/repro_uploadfile.py b/repro_uploadfile.py
+new file mode 100644
+index 00000000..d0751bb1
+--- /dev/null
++++ b/repro_uploadfile.py
+@@ -0,0 +1,10 @@
++from fastapi import FastAPI, UploadFile
++import json
++
++app = FastAPI()
++
++@app.post("/test")
++def test(f: UploadFile):
++    return f
++
++print(json.dumps(app.openapi(), indent=2))

@@ -1,6 +1,6 @@
 # 历史 129 题评测汇总
 
-已核对 **17 个完整模型/运行条目，共 2193 条逐题记录**，包含此前已发布的 morning25。七模型对比计 7 个配置，属于同一个实验批次；小样本、重试和失败打包不重复计数。日期型目录名沿用原运行标签，实际起止时间见各组 summary。
+已核对 **20 个完整模型/运行条目，共 2580 条逐题记录**，包含此前已发布的 morning25。七模型对比计 7 个配置，属于同一个实验批次；小样本、重试和失败打包不重复计数。日期型目录名沿用原运行标签，实际起止时间见各组 summary。
 
 [对应 Hugging Face checkpoint](CHECKPOINT_MAPPING.md) · [完整参数 JSON](historical-129-index.json) · [汇总 CSV](historical-129-index.csv)
 
@@ -23,6 +23,9 @@
 | notebook-v2-repeat3-round-1 | 51/126 | 18 | 8 / 28 / 80 | 4096 | 64 | 2 | [结果与脱敏轨迹](notebook-v2-repeat3-20261026/round-1/)、[逐题比较](notebook-v2-repeat3-20261026/COMPARISON.md) |
 | notebook-v2-repeat3-round-2 | 55/126 | 14 | 8 / 28 / 80 | 4096 | 64 | 2 | [结果与脱敏轨迹](notebook-v2-repeat3-20261026/round-2/)、[逐题比较](notebook-v2-repeat3-20261026/COMPARISON.md) |
 | notebook-v2-repeat3-round-3 | 47/126 | 34 | 8 / 28 / 80 | 4096 | 64 | 4 | [结果与脱敏轨迹](notebook-v2-repeat3-20261026/round-3/)、[逐题比较](notebook-v2-repeat3-20261026/COMPARISON.md) |
+| teich-repeat3-round-1 | 57/126 | 31 | 15 / 56 / 160 | 6000 | 64 | 4→12 | [结果与轨迹](teich-repeat3-20261026/round-1/)、[比较](teich-repeat3-20261026/COMPARISON.md) |
+| teich-repeat3-round-2 | 51/126 | 29 | 15 / 56 / 160 | 6000 | 64 | 12 | [结果与轨迹](teich-repeat3-20261026/round-2/)、[比较](teich-repeat3-20261026/COMPARISON.md) |
+| teich-repeat3-round-3 | 54/126 | 27 | 15 / 56 / 160 | 6000 | 64 | 12 | [结果与轨迹](teich-repeat3-20261026/round-3/)、[比较](teich-repeat3-20261026/COMPARISON.md) |
 
 本次重测为同一 remediation step25 权重：seed42、CUDA Graph 实际捕获、消息格式 auto→openai；与上一轮的逐题变化见 [对照记录](remediation25-retest-20261023/comparison-to-prior.json)。多项推理设置同时改变，不将成绩差异解释为单一参数效果。
 
@@ -41,3 +44,5 @@
 这是历史归档，未重新运行 GPU 评测。原有 [依赖审计](../provenance/DEPENDENCY_AUDIT.md) 只覆盖原评测锁文件，不覆盖本次新增的全部历史运行环境。
 
 Notebook v2三轮均seed42；前两轮单卡两路，第三轮双卡四路，第1轮经历中断。37题全过、63题全失败、26题变化，不能将差异仅解释为采样随机性。
+
+Teich新三轮亦公开脱敏执行轨迹，详见[范围与首轮恢复说明](teich-repeat3-20261026/README.md)。三轮seed42，首轮双卡四路→三卡十二路，后两轮三卡十二路；43题全过、63题全失败、20题变化。

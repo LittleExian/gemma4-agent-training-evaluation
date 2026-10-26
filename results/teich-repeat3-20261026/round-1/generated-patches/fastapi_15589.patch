@@ -1,0 +1,126 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 7c6558c69..033e455c0 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -533,8 +533,8 @@ def analyze_param(
+         use_annotation_from_field_info = use_annotation
+         if isinstance(field_info, params.Form):
+             ensure_multipart_is_installed()
+-        if not field_info.alias and getattr(field_info, "convert_underscores", None):
+-            alias = param_name.replace("_", "-")
++        if getattr(field_info, "convert_underscores", None):
++            alias = (field_info.alias or param_name).replace("_", "-")
+         else:
+             alias = field_info.alias or param_name
+         field_info.alias = alias
+@@ -820,7 +820,7 @@ def request_params_to_args(
+             )
+             if convert_underscores:
+                 alias = get_validation_alias(field)
+-                if alias == field.name:
++                if alias:
+                     alias = alias.replace("_", "-")
+         value = _get_multidict_value(field, received_params, alias=alias)
+         if value is not None:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 000000000..0b218a0a5
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,96 @@
++
++from fastapi import FastAPI, Header, Depends
++from fastapi.testclient import TestClient
++from pydantic import BaseModel
++
++app = FastAPI()
++
++@app.get("/header")
++async def read_header(x_header: str = Header()):
++    return {"x_header": x_header}
++
++@app.get("/header-alias")
++async def read_header_alias(x_header: str = Header(alias="x_header")):
++    return {"x_header": x_header}
++
++@app.get("/header-no-convert")
++async def read_header_no_convert(x_header: str = Header(alias="x_header", convert_underscores=False)):
++    return {"x_header": x_header}
++
++class HeaderModel(BaseModel):
++    x_header: str = Header(alias="x_header")
++
++@app.get("/header-model")
++async def read_header_model(header: HeaderModel = Depends()):
++    return {"x_header": header.x_header}
++
++class HeaderModelNoConvert(BaseModel):
++    x_header: str = Header(alias="x_header", convert_underscores=False)
++
++@app.get("/header-model-no-convert")
++async def read_header_model_no_convert(header: HeaderModelNoConvert = Depends()):
++    return {"x_header": header.x_header}
++
++client = TestClient(app)
++
++def test_default_underscore():
++    # Should accept x-header, not x_header
++    response = client.get("/header", headers={"x-header": "val1"})
++    assert response.status_code == 200
++    assert response.json() == {"x_header": "val1"}
++    
++    response = client.get("/header", headers={"x_header": "val2"})
++    assert response.status_code == 422
++
++def test_alias_underscore_default_convert():
++    # Should accept x-header, not x_header (since convert_underscores=True by default)
++    response = client.get("/header-alias", headers={"x-header": "val1"})
++    print(f"test_alias_underscore_default_convert x-header: {response.status_code} {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"x_header": "val1"}
++    
++    response = client.get("/header-alias", headers={"x_header": "val2"})
++    print(f"test_alias_underscore_default_convert x_header: {response.status_code} {response.json()}")
++    assert response.status_code == 422
++
++def test_no_convert_underscore():
++    # Should accept x_header
++    response = client.get("/header-no-convert", headers={"x_header": "val1"})
++    assert response.status_code == 200
++    assert response.json() == {"x_header": "val1"}
++
++def test_model_underscore():
++    # Should accept x-header, not x_header
++    response = client.get("/header-model", headers={"x-header": "val1"})
++    assert response.status_code == 200
++    assert response.json() == {"x_header": "val1"}
++    
++    response = client.get("/header-model", headers={"x_header": "val2"})
++    assert response.status_code == 422
++
++def test_model_no_convert_underscore():
++    # Should accept x_header
++    response = client.get("/header-model-no-convert", headers={"x_header": "val1"})
++    assert response.status_code == 200
++    assert response.json() == {"x_header": "val1"}
++
++if __name__ == "__main__":
++    try:
++        test_default_underscore()
++        print("test_default_underscore passed")
++        test_alias_underscore_default_convert()
++        print("test_alias_underscore_default_convert passed")
++        test_no_convert_underscore()
++        print("test_no_convert_underscore passed")
++        test_model_underscore()
++        print("test_model_underscore passed")
++        test_model_no_convert_underscore()
++        print("test_model_no_convert_underscore passed")
++        print("All tests passed!")
++    except AssertionError as e:
++        import traceback
++        traceback.print_exc()
++        exit(1)
++    except Exception as e:
++        print(f"An error occurred: {e}")
++        exit(1)

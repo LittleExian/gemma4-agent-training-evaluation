@@ -1,0 +1,119 @@
+diff --git a/check_type.py b/check_type.py
+new file mode 100644
+index 00000000..bca7771c
+--- /dev/null
++++ b/check_type.py
+@@ -0,0 +1,13 @@
++from pydantic.fields import FieldInfo
++from typing import Annotated
++from fastapi.params import Body
++
++annotation = Annotated[int, Body()]
++field_info = Body()
++merged = Body.from_annotation(annotation)
++print(f"Type of merged: {type(merged)}")
++print(f"Is merged a Body: {isinstance(merged, Body)}")
++try:
++    print(f"merged.in_: {merged.in_}")
++except AttributeError as e:
++    print(f"AttributeError: {e}")
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 46a30b3e..4f32e7e8 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -382,11 +382,7 @@ def is_bytes_sequence_field(field: ModelField) -> bool:
+ 
+ def copy_field_info(*, field_info: FieldInfo, annotation: Any) -> FieldInfo:
+     cls = type(field_info)
+-    merged_field_info = cls.from_annotation(annotation)
+-    new_field_info = copy(field_info)
+-    new_field_info.metadata = merged_field_info.metadata
+-    new_field_info.annotation = merged_field_info.annotation
+-    return new_field_info
++    return cls.from_annotation(annotation)
+ 
+ 
+ def serialize_sequence_value(*, field: ModelField, value: Any) -> Sequence[Any]:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..d0a3bb01
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,34 @@
++from fastapi import FastAPI, Body
++from pydantic import BaseModel, Field
++from typing import Union, Annotated
++import json
++
++app = FastAPI()
++
++class Cat(BaseModel):
++    type: str = "cat"
++    meow: str
++
++class Dog(BaseModel):
++    type: str = "dog"
++    bark: str
++
++class Pet(BaseModel):
++    pet: Union[Cat, Dog]
++
++@app.post("/pets")
++def create_pet(pet: Annotated[Union[Cat, Dog], Field(discriminator="type"), Body()]):
++    return pet
++
++if __name__ == "__main__":
++    schema = app.openapi()
++    # Find the /pets post request
++    paths = schema["paths"]["/pets"]["post"]
++    request_body = paths["requestBody"]["content"]["application/json"]["schema"]
++    print(json.dumps(request_body, indent=2))
++    
++    if "discriminator" in request_body:
++        print("SUCCESS: Discriminator found!")
++    else:
++        print("FAILURE: Discriminator NOT found!")
++        exit(1)
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..0b920a71
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,37 @@
++
++from typing import Literal, Union, Annotated
++from pydantic import BaseModel, Field
++from fastapi import FastAPI, Body
++import json
++
++class Cat(BaseModel):
++    type: Literal["cat"]
++    meows: bool
++
++class Dog(BaseModel):
++    type: Literal["dog"]
++    barks: bool
++
++Pet = Annotated[Union[Cat, Dog], Field(discriminator="type")]
++
++app = FastAPI()
++
++@app.post("/pet")
++async def create_pet(pet: Annotated[Pet, Body()]):
++    return pet
++
++def test_openapi_schema():
++    schema = app.openapi()
++    schema_str = json.dumps(schema)
++    print(schema_str)
++    assert '\"discriminator\": {\"propertyName\": \"type\"}' in schema_str
++
++if __name__ == "__main__":
++    try:
++        test_openapi_schema()
++        print("Success!")
++    except Exception as e:
++        print(f"Failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

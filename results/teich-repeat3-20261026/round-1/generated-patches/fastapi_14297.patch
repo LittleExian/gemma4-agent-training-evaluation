@@ -1,0 +1,114 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 7196a619..883bc0ad 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -17,7 +17,7 @@ from typing import (
+ 
+ from fastapi._compat import may_v1, shared
+ from fastapi.openapi.constants import REF_TEMPLATE
+-from fastapi.types import IncEx, ModelNameMap
++from fastapi.types import IncEx, ModelNameMap, UnionType
+ from pydantic import BaseModel, TypeAdapter, create_model
+ from pydantic import PydanticSchemaGenerationError as PydanticSchemaGenerationError
+ from pydantic import PydanticUndefinedAnnotation as PydanticUndefinedAnnotation
+@@ -370,7 +370,14 @@ def copy_field_info(*, field_info: FieldInfo, annotation: Any) -> FieldInfo:
+ 
+ 
+ def serialize_sequence_value(*, field: ModelField, value: Any) -> Sequence[Any]:
+-    origin_type = get_origin(field.field_info.annotation) or field.field_info.annotation
++    annotation = field.field_info.annotation
++    origin_type = get_origin(annotation) or annotation
++    if origin_type is Union or origin_type is UnionType:
++        for arg in get_args(annotation):
++            arg_origin = get_origin(arg) or arg
++            if lenient_issubclass(arg_origin, shared.sequence_types):
++                origin_type = arg_origin
++                break
+     assert issubclass(origin_type, shared.sequence_types)  # type: ignore[arg-type]
+     return shared.sequence_annotation_to_type[origin_type](value)  # type: ignore[no-any-return]
+ 
+diff --git a/reproduce_issue.py b/reproduce_issue.py
+new file mode 100644
+index 00000000..a28f03e6
+--- /dev/null
++++ b/reproduce_issue.py
+@@ -0,0 +1,79 @@
++from fastapi import FastAPI, File, Request
++from fastapi.exceptions import RequestValidationError
++from fastapi.responses import JSONResponse
++from typing import List, Optional, Tuple
++from fastapi.testclient import TestClient
++import traceback
++
++app = FastAPI()
++
++@app.exception_handler(RequestValidationError)
++async def validation_exception_handler(request: Request, exc: RequestValidationError):
++    print(f"Validation error occurred: {exc}")
++    traceback.print_exc()
++    return JSONResponse(status_code=400, content={"detail": str(exc)})
++
++@app.exception_handler(Exception)
++async def exception_handler(request: Request, exc: Exception):
++    print(f"Exception occurred: {exc}")
++    traceback.print_exc()
++    return JSONResponse(status_code=500, content={"detail": str(exc)})
++
++@app.post("/upload_list")
++async def upload_list(files: Optional[List[bytes]] = File(None)):
++    return {"files": files}
++
++@app.post("/upload_tuple")
++async def upload_tuple(files: Optional[Tuple[bytes, ...]] = File(None)):
++    return {"files": files}
++
++client = TestClient(app)
++
++def test_upload_optional_list_bytes():
++    # Test with no files
++    response = client.post("/upload_list")
++    print(f"No files response: {response.status_code} {response.text}")
++    assert response.status_code == 200
++    assert response.json() == {"files": None}
++
++    # Test with one file
++    response = client.post("/upload_list", files={"files": ("test.txt", b"hello")})
++    print(f"One file response: {response.status_code} {response.text}")
++    assert response.status_code == 200
++    assert response.json() == {"files": ["hello"]}
++
++    # Test with multiple files
++    response = client.post("/upload_list", files={"files": [("test1.txt", b"hello"), ("test2.txt", b"world")]})
++    print(f"Multiple files response: {response.status_code} {response.text}")
++    assert response.status_code == 200
++    assert response.json() == {"files": ["hello", "world"]}
++
++def test_upload_optional_tuple_bytes():
++    # Test with no files
++    response = client.post("/upload_tuple")
++    print(f"No files response: {response.status_code} {response.text}")
++    assert response.status_code == 200
++    assert response.json() == {"files": None}
++
++    # Test with one file
++    response = client.post("/upload_tuple", files={"files": ("test.txt", b"hello")})
++    print(f"One file response: {response.status_code} {response.text}")
++    assert response.status_code == 200
++    assert response.json() == {"files": ["hello"]}
++
++    # Test with multiple files
++    response = client.post("/upload_tuple", files={"files": [("test1.txt", b"hello"), ("test2.txt", b"world")]})
++    print(f"Multiple files response: {response.status_code} {response.text}")
++    assert response.status_code == 200
++    assert response.json() == {"files": ["hello", "world"]}
++
++if __name__ == "__main__":
++    try:
++        test_upload_optional_list_bytes()
++        test_upload_optional_tuple_bytes()
++        print("Tests passed!")
++    except Exception as e:
++        print(f"Tests failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)

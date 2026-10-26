@@ -1,0 +1,139 @@
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..f6d1bea2
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,34 @@
++from rich.segment import Segment
++from rich.text import Text
++
++def test_split_cells():
++    # A character with width 2.
++    # Let's use a character that is known to be width 2.
++    # '😀' is usually width 2.
++    text = "a😀b"
++    # cell_len("a") = 1
++    # cell_len("a😀") = 3
++    # cell_len("a😀b") = 4
++    
++    segment = Segment(text, None, None)
++    
++    # Cut at 1: "a" | "😀b"
++    s1, s2 = segment.split_cells(1)
++    print(f"Cut at 1: {repr(s1.text)} | {repr(s2.text)}")
++    assert s1.text == "a"
++    assert s2.text == "😀b"
++    
++    # Cut at 2: "a " | " b" (😀 is split)
++    s1, s2 = segment.split_cells(2)
++    print(f"Cut at 2: {repr(s1.text)} | {repr(s2.text)}")
++    assert s1.text == "a "
++    assert s2.text == " b"
++    
++    # Cut at 3: "a😀" | "b"
++    s1, s2 = segment.split_cells(3)
++    print(f"Cut at 3: {repr(s1.text)} | {repr(s2.text)}")
++    assert s1.text == "a😀"
++    assert s2.text == "b"
++
++if __name__ == "__main__":
++    test_split_cells()
+diff --git a/repro_bug.py b/repro_bug.py
+new file mode 100644
+index 00000000..13f54e0b
+--- /dev/null
++++ b/repro_bug.py
+@@ -0,0 +1,19 @@
++from rich.segment import Segment
++from rich.text import Text
++from rich.segment import cell_len
++
++def test_split_cells_bug():
++    text = "😀" * 100 + "a" * 100
++    cell_length = cell_len(text)
++    print(f"Text length: {len(text)}, Cell length: {cell_length}")
++    
++    cut = 201
++    segment = Segment(text, None, None)
++    s1, s2 = segment.split_cells(cut)
++    
++    print(f"Cut at {cut}: cell_len(s1) = {cell_len(s1.text)}, cell_len(s2) = {cell_len(s2.text)}")
++    assert cell_len(s1.text) == cut
++    assert cell_len(s2.text) == cell_length - cut
++
++if __name__ == "__main__":
++    test_split_cells_bug()
+diff --git a/reproduce_bug.py b/reproduce_bug.py
+new file mode 100644
+index 00000000..3e4040e1
+--- /dev/null
++++ b/reproduce_bug.py
+@@ -0,0 +1,23 @@
++from rich.segment import Segment, cell_len
++from rich.text import Text
++
++def test_split_cells_bug():
++    text = "😀" * 100 + "a" * 100
++    cell_length = cell_len(text)
++    cut = 201
++    segment = Segment(text, None, None)
++    s1, s2 = segment.split_cells(cut)
++    
++    s1_len = cell_len(s1.text)
++    s2_len = cell_len(s2.text)
++    
++    print(f"Text length: {len(text)}, Cell length: {cell_length}")
++    print(f"Cut at {cut}: cell_len(s1) = {s1_len}, cell_len(s2) = {s2_len}")
++    
++    assert s1_len == cut, f"s1 length should be {cut}, got {s1_len}"
++    assert s2_len == cell_length - cut, f"s2 length should be {cell_length - cut}, got {s2_len}"
++    assert s1_len + s2_len == cell_length, f"Total length should be {cell_length}, got {s1_len + s2_len}"
++
++if __name__ == "__main__":
++    test_split_cells_bug()
++    print("Test passed!")
+diff --git a/rich/segment.py b/rich/segment.py
+index 5986aac7..2b6e0488 100644
+--- a/rich/segment.py
++++ b/rich/segment.py
+@@ -129,31 +129,24 @@ class Segment(NamedTuple):
+ 
+         cell_size = get_character_cell_size
+ 
+-        pos = int((cut / cell_length) * (len(text))) - 1
+-        if pos < 0:
+-            pos = 0
+-
+-        before = text[:pos]
+-        cell_pos = cell_len(before)
+-        if cell_pos == cut:
+-            return (
+-                _Segment(before, style, control),
+-                _Segment(text[pos:], style, control),
+-            )
++        pos = 0
++        cell_pos = 0
+         while pos < len(text):
+             char = text[pos]
+             pos += 1
+-            cell_pos += cell_size(char)
+-            before = text[:pos]
++            char_len = cell_size(char)
++            cell_pos += char_len
+             if cell_pos == cut:
+                 return (
+-                    _Segment(before, style, control),
++                    _Segment(text[:pos], style, control),
+                     _Segment(text[pos:], style, control),
+                 )
+             if cell_pos > cut:
++                num_spaces_s1 = cut - (cell_pos - char_len)
++                num_spaces_s2 = cell_pos - cut
+                 return (
+-                    _Segment(before[: pos - 1] + " ", style, control),
+-                    _Segment(" " + text[pos:], style, control),
++                    _Segment(text[:pos - 1] + " " * num_spaces_s1, style, control),
++                    _Segment(" " * num_spaces_s2 + text[pos:], style, control),
+                 )
+ 
+         raise AssertionError("Will never reach here")

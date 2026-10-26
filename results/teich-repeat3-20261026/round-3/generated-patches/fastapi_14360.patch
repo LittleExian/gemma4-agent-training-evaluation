@@ -1,0 +1,233 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 20cb2c88..89a2d5a8 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -785,11 +785,11 @@ def request_params_to_args(
+                     if field.alias != field.name
+                     else field.name.replace("_", "-")
+                 )
++        extraction_key = alias or field.alias or field.name
+         value = _get_multidict_value(field, received_params, alias=alias)
+         if value is not None:
+-            params_to_process[field.name] = value
+-        processed_keys.add(alias or field.alias)
+-        processed_keys.add(field.name)
++            params_to_process[extraction_key] = value
++        processed_keys.add(extraction_key)
+ 
+     for key in received_params.keys():
+         if key not in processed_keys:
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..983c31a6
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,110 @@
++
++from fastapi import FastAPI, Query, Header, Cookie
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field
++
++app = FastAPI()
++
++class QueryModel(BaseModel):
++    q_alias: str = Field(..., alias="q")
++
++@app.get("/query")
++async def read_query(params: QueryModel = Query()):
++    return params
++
++class HeaderModel(BaseModel):
++    h_alias: str = Field(..., alias="h")
++
++@app.get("/header")
++async def read_header(params: HeaderModel = Header()):
++    return params
++
++class CookieModel(BaseModel):
++    c_alias: str = Field(..., alias="c")
++
++@app.get("/cookie")
++async def read_cookie(params: CookieModel = Cookie()):
++    return params
++
++client = TestClient(app)
++
++def test_query_alias():
++    # 1. Value extracted by alias, but put into values with key field.name
++    # This should work if fixed.
++    response = client.get("/query", params={"q": "value"})
++    print(f"Response status: {response.status_code}, body: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"q_alias": "value"}
++
++    # 2. Value passed by name, should be extra parameter
++    # If we pass q_alias, it should be an extra parameter if we use forbid extra.
++    # But the model doesn't have forbid extra. Let's add it.
++    pass
++
++def test_query_alias_forbid_extra():
++    class QueryModelForbid(BaseModel):
++        q_alias: str = Field(..., alias="q")
++        class Config:
++            extra = "forbid"
++
++    @app.get("/query_forbid")
++    async def read_query_forbid(params: QueryModelForbid = Query()):
++        return params
++
++    # Pass by alias - should work
++    response = client.get("/query_forbid", params={"q": "value"})
++    assert response.status_code == 200
++    assert response.json() == {"q_alias": "value"}
++
++    # Pass by name - should be extra parameter error
++    response = client.get("/query_forbid", params={"q_alias": "value"})
++    assert response.status_code == 422
++    # The 'input' field should contain 'q_alias'
++    # If the bug is present, 'q_alias' was added to processed_keys, so it's not in 'input' as extra.
++    # Wait, if it's not in processed_keys, it's added to params_to_process.
++    # Then Pydantic sees it as an extra parameter.
++    # If it IS in processed_keys, it's NOT added to params_to_process in the second loop.
++    # But it's also not extracted in the first loop because it's not the alias.
++    # So it's just ignored?
++    # Let's see.
++    print(response.json())
++    assert "q_alias" in str(response.json())
++
++def test_header_alias():
++    # Header with alias
++    response = client.get("/header", headers={"h": "value"})
++    assert response.status_code == 200
++    assert response.json() == {"h_alias": "value"}
++
++def test_header_alias_underscores():
++    # Header with underscores in name, should be converted to dashes
++    class HeaderModelUnderscores(BaseModel):
++        h_underscore: str = Field(..., alias="h-underscore") # explicit alias
++        h_name: str = Field(...) # no alias, should be converted to h-name
++
++    @app.get("/header_underscores")
++    async def read_header_underscores(params: HeaderModelUnderscores = Header()):
++        return params
++
++    # h-underscore should work
++    # h-name should work (converted from h_name)
++    response = client.get("/header_underscores", headers={"h-underscore": "v1", "h-name": "v2"})
++    assert response.status_code == 200
++    assert response.json() == {"h_underscore": "v1", "h_name": "v2"}
++
++if __name__ == "__main__":
++    try:
++        test_query_alias()
++        print("test_query_alias passed")
++        test_query_alias_forbid_extra()
++        print("test_query_alias_forbid_extra passed")
++        test_header_alias()
++        print("test_header_alias passed")
++        test_header_alias_underscores()
++        print("test_header_alias_underscores passed")
++        print("All tests passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()
++        exit(1)
+diff --git a/reproduce_alias.py b/reproduce_alias.py
+new file mode 100644
+index 00000000..641ce4e4
+--- /dev/null
++++ b/reproduce_alias.py
+@@ -0,0 +1,25 @@
++from fastapi import FastAPI, Query
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field
++
++app = FastAPI()
++
++class QueryModel(BaseModel):
++    q_alias: str = Field(..., alias="q")
++
++@app.get("/")
++async def root(q_model: QueryModel = Query(...)):
++    print(f"q_model type: {type(q_model)}")
++    print(f"q_model: {q_model}")
++    return q_model
++
++client = TestClient(app)
++
++def test_alias_extraction():
++    response = client.get("/?q=value")
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"q_alias": "value"}
++
++if __name__ == "__main__":
++    test_alias_extraction()
+diff --git a/reproduce_extra.py b/reproduce_extra.py
+new file mode 100644
+index 00000000..619665ac
+--- /dev/null
++++ b/reproduce_extra.py
+@@ -0,0 +1,26 @@
++from fastapi import FastAPI, Query
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field
++
++app = FastAPI()
++
++class QueryModel(BaseModel):
++    q_alias: str = Field(..., alias="q")
++
++@app.get("/")
++async def root(q_model: QueryModel = Query(...)):
++    return q_model
++
++client = TestClient(app)
++
++def test_extra_params():
++    # Pass both alias 'q' and field name 'q_alias'
++    # 'q' should be used for validation, 'q_alias' should be an extra param
++    response = client.get("/?q=value&q_alias=extra")
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    # The model should only have 'value'
++    assert response.json() == {"q": "value"} # based on previous run, it uses alias in response
++
++if __name__ == "__main__":
++    test_extra_params()
+diff --git a/reproduce_extra_forbid.py b/reproduce_extra_forbid.py
+new file mode 100644
+index 00000000..9c2c4baa
+--- /dev/null
++++ b/reproduce_extra_forbid.py
+@@ -0,0 +1,29 @@
++from fastapi import FastAPI, Query
++from fastapi.testclient import TestClient
++from pydantic import BaseModel, Field, ConfigDict
++
++app = FastAPI()
++
++class QueryModel(BaseModel):
++    model_config = ConfigDict(extra='forbid')
++    q_alias: str = Field(..., alias="q")
++
++@app.get("/")
++async def root(q_model: QueryModel = Query(...)):
++    return q_model
++
++client = TestClient(app)
++
++def test_extra_params():
++    # Pass both alias 'q' and field name 'q_alias'
++    # 'q' should be used for validation, 'q_alias' should be an extra param
++    # Since extra='forbid', this should fail with 422
++    response = client.get("/?q=value&q_alias=extra")
++    print(f"Response: {response.json()}")
++    assert response.status_code == 422
++    # Check that 'q_alias' is reported as an extra parameter
++    errors = response.json()["detail"]
++    assert any(err["type"] == "extra_forbidden" and err["loc"] == ["q_model", "q_alias"] for err in errors)
++
++if __name__ == "__main__":
++    test_extra_params()

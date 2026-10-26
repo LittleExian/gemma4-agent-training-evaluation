@@ -1,0 +1,83 @@
+diff --git a/fastapi/_compat/__init__.py b/fastapi/_compat/__init__.py
+index fd1df8c6..46103fc1 100644
+--- a/fastapi/_compat/__init__.py
++++ b/fastapi/_compat/__init__.py
+@@ -29,10 +29,10 @@ from .main import serialize_sequence_value as serialize_sequence_value
+ from .main import (
+     with_info_plain_validator_function as with_info_plain_validator_function,
+ )
+-from .may_v1 import CoreSchema as CoreSchema
+-from .may_v1 import GetJsonSchemaHandler as GetJsonSchemaHandler
+-from .may_v1 import JsonSchemaValue as JsonSchemaValue
+-from .may_v1 import _normalize_errors as _normalize_errors
++from .v2 import CoreSchema as CoreSchema
++from .v2 import GetJsonSchemaHandler as GetJsonSchemaHandler
++from .v2 import JsonSchemaValue as JsonSchemaValue
++from .v2 import _normalize_errors as _normalize_errors
+ from .model_field import ModelField as ModelField
+ from .shared import PYDANTIC_V2 as PYDANTIC_V2
+ from .shared import PYDANTIC_VERSION_MINOR_TUPLE as PYDANTIC_VERSION_MINOR_TUPLE
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index cbcb98e1..fb72e89d 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -11,7 +11,7 @@ from typing import (
+     cast,
+ )
+ 
+-from fastapi._compat import may_v1, shared
++from fastapi._compat import shared
+ from fastapi.openapi.constants import REF_TEMPLATE
+ from fastapi.types import IncEx, ModelNameMap, UnionType
+ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
+@@ -148,6 +148,7 @@ class ModelField:
+             annotated_args = (
+                 field_dict["annotation"],
+                 *field_dict["metadata"],
++
+                 # this FieldInfo needs to be created again so that it doesn't include
+                 # the old field info metadata and only the rest of the attributes
+                 Field(**field_dict["attributes"]),
+@@ -175,7 +176,7 @@ class ModelField:
+                 None,
+             )
+         except ValidationError as exc:
+-            return None, may_v1._regenerate_error_with_loc(
++            return None, _regenerate_error_with_loc(
+                 errors=exc.errors(include_url=False), loc_prefix=loc
+             )
+ 
+@@ -569,3 +570,33 @@ def get_flat_models_from_fields(
+ 
+ def get_long_model_name(model: TypeModelOrEnum) -> str:
+     return f"{model.__module__}__{model.__qualname__}".replace(".", "__")
++
++
++RequestErrorModel: type[BaseModel] = create_model("Request")
++
++
++def _normalize_errors(errors: Sequence[Any]) -> list[dict[str, Any]]:
++    use_errors: list[Any] = []
++    for error in errors:
++        if isinstance(error, ErrorWrapper):
++            new_errors = ValidationError(
++                errors=[error], model=RequestErrorModel
++            ).errors()
++            use_errors.extend(new_errors)
++        elif isinstance(error, list):
++            use_errors.extend(_normalize_errors(error))
++        else:
++            use_errors.append(error)
++    return use_errors
++
++
++def _regenerate_error_with_loc(
++    *, errors: Sequence[Any], loc_prefix: tuple[Union[str, int], ...]
++) -> list[dict[str, Any]]:
++    updated_loc_errors: list[Any] = [
++        {**err, "loc": loc_prefix + err.get("loc", ())}
++        for err in _normalize_errors(errors)
++    ]
++
++    return updated_loc_errors
++

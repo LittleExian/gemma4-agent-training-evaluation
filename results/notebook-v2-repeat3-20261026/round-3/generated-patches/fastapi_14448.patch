@@ -1,0 +1,135 @@
+diff --git a/fastapi/dependencies/models.py b/fastapi/dependencies/models.py
+index 2a4d9a01..715d7234 100644
+--- a/fastapi/dependencies/models.py
++++ b/fastapi/dependencies/models.py
+@@ -7,13 +7,9 @@ from typing import Any, Callable, List, Optional, Sequence, Union
+ from fastapi._compat import ModelField
+ from fastapi.security.base import SecurityBase
+ from fastapi.types import DependencyCacheKey
++from fastapi.utils import is_async_callable, is_gen_callable, is_async_gen_callable
+ from typing_extensions import Literal
+ 
+-if sys.version_info >= (3, 13):  # pragma: no cover
+-    from inspect import iscoroutinefunction
+-else:  # pragma: no cover
+-    from asyncio import iscoroutinefunction
+-
+ 
+ @dataclass
+ class SecurityRequirement:
+@@ -75,37 +71,17 @@ class Dependant:
+                 return True
+         return False
+ 
+-    @cached_property
+-    def _unwrapped_call(self) -> Any:
+-        if self.call is None:
+-            return self.call  # pragma: no cover
+-        unwrapped = inspect.unwrap(self.call)
+-        if isinstance(unwrapped, partial):
+-            unwrapped = unwrapped.func
+-        return unwrapped
+-
+     @cached_property
+     def is_gen_callable(self) -> bool:
+-        if inspect.isgeneratorfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isgeneratorfunction(dunder_call)
++        return is_gen_callable(self.call)
+ 
+     @cached_property
+     def is_async_gen_callable(self) -> bool:
+-        if inspect.isasyncgenfunction(self._unwrapped_call):
+-            return True
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return inspect.isasyncgenfunction(dunder_call)
++        return is_async_gen_callable(self.call)
+ 
+     @cached_property
+     def is_coroutine_callable(self) -> bool:
+-        if inspect.isroutine(self._unwrapped_call):
+-            return iscoroutinefunction(self._unwrapped_call)
+-        if inspect.isclass(self._unwrapped_call):
+-            return False
+-        dunder_call = getattr(self._unwrapped_call, "__call__", None)  # noqa: B004
+-        return iscoroutinefunction(dunder_call)
++        return is_async_callable(self.call)
+ 
+     @cached_property
+     def computed_scope(self) -> Union[str, None]:
+diff --git a/fastapi/routing.py b/fastapi/routing.py
+index c10175b1..e63657ac 100644
+--- a/fastapi/routing.py
++++ b/fastapi/routing.py
+@@ -62,7 +62,7 @@ from fastapi.utils import (
+ from pydantic import BaseModel
+ from starlette import routing
+ from starlette._exception_handler import wrap_app_handling_exceptions
+-from starlette._utils import is_async_callable
++from fastapi.utils import is_async_callable
+ from starlette.concurrency import run_in_threadpool
+ from starlette.exceptions import HTTPException
+ from starlette.requests import Request
+diff --git a/fastapi/utils.py b/fastapi/utils.py
+index b3b89ed2..2c934893 100644
+--- a/fastapi/utils.py
++++ b/fastapi/utils.py
+@@ -1,3 +1,5 @@
++import functools
++import inspect
+ import re
+ import warnings
+ from dataclasses import is_dataclass
+@@ -62,6 +64,51 @@ def get_path_param_names(path: str) -> Set[str]:
+     return set(re.findall("{(.*?)}", path))
+ 
+ 
++def is_async_callable(obj: Any) -> bool:
++    while True:
++        if inspect.iscoroutinefunction(obj) or (
++            callable(obj) and inspect.iscoroutinefunction(getattr(obj, "__call__", None))
++        ):
++            return True
++        if isinstance(obj, functools.partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    return False
++
++
++def is_gen_callable(obj: Any) -> bool:
++    while True:
++        if inspect.isgeneratorfunction(obj) or (
++            callable(obj) and inspect.isgeneratorfunction(getattr(obj, "__call__", None))
++        ):
++            return True
++        if isinstance(obj, functools.partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    return False
++
++
++def is_async_gen_callable(obj: Any) -> bool:
++    while True:
++        if inspect.isasyncgenfunction(obj) or (
++            callable(obj) and inspect.isasyncgenfunction(getattr(obj, "__call__", None))
++        ):
++            return True
++        if isinstance(obj, functools.partial):
++            obj = obj.func
++        elif hasattr(obj, "__wrapped__"):
++            obj = obj.__wrapped__
++        else:
++            break
++    return False
++
++
+ _invalid_args_message = (
+     "Invalid args for response field! Hint: "
+     "check that {type_} is a valid Pydantic field type. "

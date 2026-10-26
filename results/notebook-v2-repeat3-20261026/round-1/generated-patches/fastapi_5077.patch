@@ -1,0 +1,83 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index ef3f5641..ce96bd6f 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -192,7 +192,12 @@ def get_flat_params(dependant: Dependant) -> List[ModelField]:
+ 
+ def get_typed_signature(call: Callable[..., Any]) -> inspect.Signature:
+     signature = inspect.signature(call)
+-    globalns = getattr(call, "__globals__", {})
++    
++    # Follow __wrapped__ to get the original function's globals
++    original_call = call
++    while hasattr(original_call, "__wrapped__"):
++        original_call = original_call.__wrapped__
++    globalns = getattr(original_call, "__globals__", {})
+     typed_params = [
+         inspect.Parameter(
+             name=param.name,
+@@ -222,7 +227,11 @@ def get_typed_return_annotation(call: Callable[..., Any]) -> Any:
+     if annotation is inspect.Signature.empty:
+         return None
+ 
+-    globalns = getattr(call, "__globals__", {})
++    # Follow __wrapped__ to get the original function's globals
++    original_call = call
++    while hasattr(original_call, "__wrapped__"):
++        original_call = original_call.__wrapped__
++    globalns = getattr(original_call, "__globals__", {})
+     return get_typed_annotation(annotation, globalns)
+ 
+ 
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..9747b202
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,32 @@
++
++import functools
++from typing import ForwardRef, Any, Dict
++from fastapi.dependencies.utils import get_typed_signature, get_typed_annotation
++from wrapper_module import wrap
++
++# Define a class to use as a forward reference
++class MyModel:
++    pass
++
++def foo(a: "MyModel"):
++    return a
++
++# Wrap foo
++wrapped_foo = wrap(foo)
++
++print(f"foo globals: {foo.__globals__ is globals()}")
++print(f"wrapped_foo globals: {wrapped_foo.__globals__ is globals()}")
++
++try:
++    sig = get_typed_signature(wrapped_foo)
++    print(f"Success! Signature: {sig}")
++    for param in sig.parameters.values():
++        print(f"Param {param.name} annotation: {param.annotation}")
++        if param.annotation is MyModel:
++            print("Annotation resolved correctly!")
++        else:
++            print("Annotation NOT resolved correctly.")
++except Exception as e:
++    print(f"Error: {e}")
++    import traceback
++    traceback.print_exc()
+diff --git a/wrapper_module.py b/wrapper_module.py
+new file mode 100644
+index 00000000..7f29889d
+--- /dev/null
++++ b/wrapper_module.py
+@@ -0,0 +1,8 @@
++
++import functools
++
++def wrap(f):
++    @functools.wraps(f)
++    def wrapper(*args, **kwargs):
++        return f(*args, **kwargs)
++    return wrapper

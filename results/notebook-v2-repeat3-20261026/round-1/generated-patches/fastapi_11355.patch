@@ -1,0 +1,93 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 91348c8e..97b3f897 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -17,6 +17,7 @@ from typing import (
+     Type,
+     Union,
+     cast,
++    get_type_hints,
+ )
+ 
+ import anyio
+@@ -194,12 +195,16 @@ def get_typed_signature(call: Callable[..., Any]) -> inspect.Signature:
+     signature = inspect.signature(call)
+     unwrapped = inspect.unwrap(call)
+     globalns = getattr(unwrapped, "__globals__", {})
++    try:
++        type_hints = get_type_hints(call, globalns=globalns)
++    except Exception:
++        type_hints = {}
+     typed_params = [
+         inspect.Parameter(
+             name=param.name,
+             kind=param.kind,
+             default=param.default,
+-            annotation=get_typed_annotation(param.annotation, globalns),
++            annotation=type_hints.get(param.name, get_typed_annotation(param.annotation, globalns)),
+         )
+         for param in signature.parameters.values()
+     ]
+@@ -225,6 +230,12 @@ def get_typed_return_annotation(call: Callable[..., Any]) -> Any:
+         return None
+ 
+     globalns = getattr(unwrapped, "__globals__", {})
++    try:
++        type_hints = get_type_hints(call, globalns=globalns)
++        if "return" in type_hints:
++            return type_hints["return"]
++    except Exception:
++        pass
+     return get_typed_annotation(annotation, globalns)
+ 
+ 
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..01d36a60
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,44 @@
++from __future__ import annotations
++from fastapi import FastAPI
++from pydantic import BaseModel
++import inspect
++
++app = FastAPI()
++
++class Item(BaseModel):
++    name: str
++    price: float
++
++@app.get("/items/")
++async def read_items(item: Item):
++    return item
++
++print(f"Annotations: {read_items.__annotations__}")
++# In Python 3.10 with from __future__ import annotations, 
++# read_items.__annotations__ should be {'item': 'Item'}
++
++# Now let's see how FastAPI handles it.
++# We can check the route's endpoint and its parameters.
++for route in app.routes:
++    if route.path == "/items/":
++        print(f"Route endpoint: {route.endpoint}")
++        # FastAPI processes the endpoint in APIRoute.__init__
++        # Let's see if it resolved the type.
++        # The resolved parameters are stored in route.endpoint_class or similar?
++        # Actually, APIRoute has a `route_class` and it creates a `route` object.
++        # The parameters are in route.endpoint_class? No.
++        # Let's check route.endpoint's annotations after FastAPI has processed it.
++        print(f"Resolved annotations: {route.endpoint.__annotations__}")
++        # Wait, FastAPI doesn't modify the original function's annotations.
++        # It creates a `route` object that contains the resolved parameters.
++        # Let's look at route.endpoint_class or route.endpoint.
++        # Actually, APIRoute has `route.endpoint` which is the original function.
++        # The resolved parameters are in `route.endpoint_class`? No.
++        # Let's check `route.endpoint`'s `__annotations__` again.
++        # If FastAPI uses get_type_hints, it should work.
++        # But where does it store the resolved types?
++        # In APIRoute, it's in `self.endpoint_class`? No.
++        # Let's check `route.endpoint`'s `__annotations__` after the app is created.
++        # Actually, let's just check if the route was created successfully.
++        print("Route created successfully")
++

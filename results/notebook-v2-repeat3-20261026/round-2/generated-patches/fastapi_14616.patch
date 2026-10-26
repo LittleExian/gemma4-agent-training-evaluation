@@ -1,0 +1,58 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index e5ac51d5..283f8e0a 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -731,7 +731,16 @@ def _get_multidict_value(
+ ) -> Any:
+     alias = alias or get_validation_alias(field)
+     if is_sequence_field(field) and isinstance(values, (ImmutableMultiDict, Headers)):
+-        value = values.getlist(alias)
++        # Check if it's a Json field
++        is_json = False
++        if hasattr(field.field_info, "metadata") and field.field_info.metadata:
++            if any("Json" in str(m) for m in field.field_info.metadata):
++                is_json = True
++
++        if is_json:
++            value = values.get(alias, None)
++        else:
++            value = values.getlist(alias)
+     else:
+         value = values.get(alias, None)
+     if (
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..479a06a8
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,30 @@
++from fastapi import FastAPI, Form
++from pydantic import Json
++from typing import Annotated, List
++from fastapi.testclient import TestClient
++
++app = FastAPI()
++
++@app.post("/upload")
++def upload(
++    tags: Annotated[Json[List[str]], Form()]
++):
++    return {"tags": tags}
++
++client = TestClient(app)
++
++def test_json_form():
++    # Client sends JSON string in form field
++    response = client.post("/upload", data={"tags": '["abc", "def"]'})
++    print(f"Response: {response.json()}")
++    assert response.status_code == 200
++    assert response.json() == {"tags": ["abc", "def"]}
++
++if __name__ == "__main__":
++    try:
++        test_json_form()
++        print("Test passed!")
++    except Exception as e:
++        print(f"Test failed: {e}")
++        import traceback
++        traceback.print_exc()

@@ -1,0 +1,746 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "agent": {
+    "name": "adk-eval-core",
+    "version": "1.0"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "system",
+      "message": "You are an autonomous software engineer. Your job: make the smallest correct change to the SOURCE code in /workspace so that the hidden tests for the issue below pass. The hidden tests were written from the issue text, so the exact names, messages, types and behaviours in the issue are the specification.\n\n# HARD LIMITS\n- 28 tool calls and 8 minutes in total. When either runs out, the working tree is graded as it is. An edit that exists counts, even if you never call `submit_patch`. An unedited tree always scores zero.\n- Never create, modify or delete test files (`test_*.py`, `*_test.py`, anything under `tests/`). This is an automatic failure.\n- Never run a full test suite (bare `pytest`, `pytest .`, `unittest discover`). Always name one test file, and add `-k` when you can.\n- Never look outside /workspace. All dependencies are already installed.\n- Never use `search_similar_code`, `get_code_neighbors` or `get_code_subgraph`. They return nothing useful.\n\n# CALL PLAN\n- Calls 1-8: locate and read. Calls 9-12: edit. You MUST have edited a source file by call 12. If you are unsure, make your best-guess edit in the most likely place now. A wrong edit can still be corrected. Pure reading cannot score.\n- Calls 13-20: verify and correct.\n- Call 20 onward: no new exploration. Check, fix, submit.\n- Always finish with `git diff` followed by `submit_patch`.\n\n# PROCEDURE\n\n## 1. Extract the specification (no tool call)\nFrom the issue, list for yourself: the exact file, function, class or CLI name; the exact error message and exception type; the expected return value or output; the inputs that trigger the bug; every edge case mentioned (None, empty, negative, unicode, duplicates, defaults). Treat every concrete string and name in the issue as a literal that must appear exactly in your code.\n\n## 2. Locate\n- Use exact paths from the issue directly. When searches are necessary, combine independent searches for the issue's exact symbols, their callers and relevant test paths into one run_command. Use git grep with fixed-string patterns for literal identifiers and git ls-files for tracked file paths; each result should show its file path and line number where applicable.\n- Batch only searches whose inputs are already known. If the next search depends on the first result, inspect that result before searching again. Limit each search to about 20 matching lines and keep total output short; never dump whole files or the repository tree.\n- Once the target is located, read the relevant implementation plus one relevant caller or test case. When both paths and line ranges are known, read these small regions in one run_command using sed with explicit line ranges, or use read_file for a single region. Aim for about 40 lines per region and at most three regions per command. Include enough surrounding code to understand signatures, defaults and error handling.\n- For a bug: find where the wrong behaviour is produced and use the caller or test to understand the contract before editing.\n- For a feature: find the closest existing sibling (a similar function, option, class, or doc example) and copy its pattern, including registration points such as __all__, option lists, dispatch tables and imports.\n- Reuse paths and test names already discovered. Do not spend another tool call repeating a search that already answered the question.\n- If the issue includes a code snippet that reproduces the problem, you may run it once with python -c (one call, never create a file) to see the real error.\n\n## 3. Edit\n- Use edit_file for changes to existing code. Copy old_string exactly from the source, including whitespace, and choose a short unique match. Use write_file only for a genuinely new source file that the issue requires.\n- If edit_file reports no match or multiple matches, read the exact source region and retry with a smaller unique snippet. Never repeat an identical failed edit. After two matching failures, use one inline Python script through run_command with a quoted heredoc; assert that the old text occurs exactly once before replacing it and writing the file. Preserve unrelated content and do not rewrite the file from memory.\n- Fix the cause, not the symptom. Do not special-case the example from the issue.\n- Change only what the issue requires. Keep existing signatures, defaults, and backward compatibility unless the issue says otherwise. Match the style, naming and error-handling idioms of the surrounding code.\n- Use the exact exception class and exact message text from the issue. If the issue only describes the error, reuse the wording style of neighbouring error messages.\n- Handle every edge case you listed in step 1.\n- For documentation-code tasks (for example FastAPI), edit the executable code under `docs_src/`.\n\n## 4. Verify (at most 2 calls)\n- Find the test file with `find tests -name \"*keyword*.py\"`, then run `timeout 150 python -m pytest tests/path/test_x.py -x -q -k keyword`. Use `python3 -m unittest tests.test_x` for unittest projects.\n- Failures that come from missing fixtures, missing data, or import errors unrelated to your change are pre-existing. Ignore them. Never repair tests or the environment.\n- If a test related to your change fails, read the traceback, fix the source once, and rerun once. If no test can run, do one `python -c` check or `python -m py_compile` on the edited file.\n\n## 5. Final check and submit\n- Run `git diff`. Confirm that: only source files changed; every name, message and type from step 1 appears exactly; nothing unrelated was touched; there are no leftover debug prints or stray files.\n- Call `submit_patch`. Confirm `patch_size > 0` and `files_changed > 0`. If either is 0, you have not edited anything. Edit now and submit again.\n- End with a single-sentence summary of the fix.\n\n# DECISION RULES\n- Ambiguous issue: choose the most literal reading of the issue text and act on it. Do not ask questions and do not stall.\n- Several possible locations: pick the one where the wrong behaviour is produced, not where it is merely observed.\n- Search returned nothing: try one different specific string, then edit your best candidate anyway.\n- Stuck after a failed fix: make a different, smaller change. Do not repeat the same edit.\n- Never conclude that nothing needs to change. Every task requires a non-empty source patch.",
+      "extra": {
+        "event_type": "system_instruction",
+        "elapsed_s": 2.1813511848449707,
+        "timestamp": 1792908066.6193988,
+        "author": "harness"
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "user",
+      "message": "[BENCHMARK_PROBLEM_STATEMENT_OMITTED_FROM_PUBLIC_EXPORT]",
+      "extra": {
+        "event_type": "task_prompt",
+        "elapsed_s": 2.181359052658081,
+        "timestamp": 1792908066.6194067,
+        "author": "harness"
+      },
+      "message_source_sha256": "8f403c6b2604ab010c97c25a710b81b866a717d76b5e1238b7535689aea1ba10",
+      "message_source_characters": 5306,
+      "public_omission_reason": "Benchmark task text is not included in this agent-output publication."
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "The issue is about fixing support for `functools.wraps` and `functools.partial` combined, for async and regular functions and classes in path operations and dependencies.\nThe core problem is that FastAPI needs to correctly identify if a callable (which might be wrapped by `functools.wraps` or created via `functools.partial`) is async or not, to decide whether it needs to be awaited.\nIf either the original function or the wrapper is async, it should be treated as async.\n\nI need to find where FastAPI analyzes if a function is async, generator, async generator, etc.\nLooking at the file list, `fastapi/utils.py` or `fastapi/dependencies/utils.py` seem like likely places.\n\nLet's search for \"async\" and \"callable\" or \"wraps\" or \"partial\" in the codebase.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_3",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "git grep -E \"functools.wraps|functools.partial\" /workspace/fastapi"
+          },
+          "extra": {
+            "elapsed_s": 10.723759889602661,
+            "timestamp": 1792908075.1618075,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"fastapi/routing.py:        func if is_async_callable(func) else functools.partial(run_in_threadpool, func)  # type:ignore\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 10.828689813613892,
+          "timestamp": 1792908075.2667375,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 4179,
+        "completion_tokens": 222,
+        "cached_tokens": 0,
+        "total_tokens": 4401
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 10.723759889602661,
+        "timestamp": 1792908075.1618075,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "agent",
+      "message": "The grep only found one occurrence of `functools.partial` in `fastapi/routing.py`.\nWait, maybe it's not using `functools.partial` explicitly but checking for it?\nLet's search for `is_async_callable`.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_6",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "git grep \"is_async_callable\" /workspace/fastapi"
+          },
+          "extra": {
+            "elapsed_s": 13.761456727981567,
+            "timestamp": 1792908078.1995044,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"fastapi/routing.py:from starlette._utils import is_async_callable\\nfastapi/routing.py:        func if is_async_callable(func) else functools.partial(run_in_threadpool, func)  # type:ignore\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 13.848779439926147,
+          "timestamp": 1792908078.286827,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 4487,
+        "completion_tokens": 89,
+        "cached_tokens": 0,
+        "total_tokens": 4576
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 13.761456727981567,
+        "timestamp": 1792908078.1995044,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "agent",
+      "message": "`is_async_callable` is imported from `starlette._utils`. FastAPI might be using its own logic or extending it.\nThe issue description says: \"The logic to analyze if a function is an async, generator, async generator, callable instance, etc. now also checks and unwraps and extracts partials in all those levels.\"\n\nLet's look for where FastAPI handles dependencies and path operations.\n`fastapi/routing.py` and `fastapi/dependencies/utils.py` are good candidates.\n\nLet's search for where it checks if something is async in `fastapi/dependencies/utils.py`.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_9",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep -n \"async\" fastapi/dependencies/utils.py"
+          },
+          "extra": {
+            "elapsed_s": 19.58003282546997,
+            "timestamp": 1792908084.0180805,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"54:    asynccontextmanager,\\n270:                (dependant.is_gen_callable or dependant.is_async_gen_callable)\\n547:async def _solve_generator(\\n553:    elif dependant.is_async_gen_callable:\\n554:        cm = asynccontextmanager(dependant.call)(**sub_values)\\n555:    return await stack.enter_async_context(cm)\\n567:async def solve_dependencies(\\n578:    async_exit_stack: AsyncExitStack,\\n626:            async_exit_stack=async_exit_stack,\\n636:            use_sub_dependant.is_gen_callable or use_sub_dependant.is_async_gen_callable\\n877:async def _extract_form_body(\\n901:            async def process_fn(\\n907:            async with anyio.create_task_group() as tg:\\n924:async def request_body_to_args(\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 19.639801025390625,
+          "timestamp": 1792908084.0778487,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 4681,
+        "completion_tokens": 165,
+        "cached_tokens": 0,
+        "total_tokens": 4846
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 19.58003282546997,
+        "timestamp": 1792908084.0180805,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "agent",
+      "message": "It seems `dependant.is_gen_callable` and `dependant.is_async_gen_callable` are used.\nWhere are these properties defined?\n`dependant` is likely an instance of a class in `fastapi/dependencies/models.py`.\n\nLet's check `fastapi/dependencies/models.py`.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_12",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep -n \"is_async_gen_callable\" fastapi/dependencies/models.py"
+          },
+          "extra": {
+            "elapsed_s": 23.22304916381836,
+            "timestamp": 1792908087.6610968,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"95:    def is_async_gen_callable(self) -> bool:\\n114:        if self.is_gen_callable or self.is_async_gen_callable:\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 23.284770250320435,
+          "timestamp": 1792908087.722818,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 5135,
+        "completion_tokens": 111,
+        "cached_tokens": 0,
+        "total_tokens": 5246
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 23.22304916381836,
+        "timestamp": 1792908087.6610968,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "agent",
+      "message": "Let's read `fastapi/dependencies/models.py` around line 95.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_15",
+          "function_name": "read_file",
+          "arguments": {
+            "filepath": "fastapi/dependencies/models.py",
+            "start_line": 80,
+            "end_line": 120
+          },
+          "extra": {
+            "elapsed_s": 25.929292917251587,
+            "timestamp": 1792908090.3673406,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/dependencies/models.py\", \"content\": \"        if self.call is None:\\n            return self.call  # pragma: no cover\\n        unwrapped = inspect.unwrap(self.call)\\n        if isinstance(unwrapped, partial):\\n            unwrapped = unwrapped.func\\n        return unwrapped\\n\\n    @cached_property\\n    def is_gen_callable(self) -> bool:\\n        if inspect.isgeneratorfunction(self._unwrapped_call):\\n            return True\\n        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n        return inspect.isgeneratorfunction(dunder_call)\\n\\n    @cached_property\\n    def is_async_gen_callable(self) -> bool:\\n        if inspect.isasyncgenfunction(self._unwrapped_call):\\n            return True\\n        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n        return inspect.isasyncgenfunction(dunder_call)\\n\\n    @cached_property\\n    def is_coroutine_callable(self) -> bool:\\n        if inspect.isroutine(self._unwrapped_call):\\n            return iscoroutinefunction(self._unwrapped_call)\\n        if inspect.isclass(self._unwrapped_call):\\n            return False\\n        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n        return iscoroutinefunction(dunder_call)\\n\\n    @cached_property\\n    def computed_scope(self) -> Union[str, None]:\\n        if self.scope:\\n            return self.scope\\n        if self.is_gen_callable or self.is_async_gen_callable:\\n            return \\\"request\\\"\\n        return None\", \"start_line\": 80, \"end_line\": 116, \"total_lines\": 116, \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "read_file",
+          "elapsed_s": 25.931917905807495,
+          "timestamp": 1792908090.3699656,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 5335,
+        "completion_tokens": 62,
+        "cached_tokens": 0,
+        "total_tokens": 5397
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 25.929292917251587,
+        "timestamp": 1792908090.3673406,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "agent",
+      "message": "Wait, I missed `_unwrapped_call`. Let's see how it's defined.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_18",
+          "function_name": "read_file",
+          "arguments": {
+            "end_line": 80,
+            "filepath": "fastapi/dependencies/models.py",
+            "start_line": 70
+          },
+          "extra": {
+            "elapsed_s": 28.050085306167603,
+            "timestamp": 1792908092.488133,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/dependencies/models.py\", \"content\": \"            return True\\n        if self.security_scopes_param_name is not None:\\n            return True\\n        for sub_dep in self.dependencies:\\n            if sub_dep._uses_scopes:\\n                return True\\n        return False\\n\\n    @cached_property\\n    def _unwrapped_call(self) -> Any:\\n        if self.call is None:\", \"start_line\": 70, \"end_line\": 80, \"total_lines\": 116, \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "read_file",
+          "elapsed_s": 28.0520236492157,
+          "timestamp": 1792908092.4900713,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 5902,
+        "completion_tokens": 62,
+        "cached_tokens": 0,
+        "total_tokens": 5964
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 28.050085306167603,
+        "timestamp": 1792908092.488133,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "agent",
+      "message": "Let's read `_unwrapped_call` completely.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_21",
+          "function_name": "read_file",
+          "arguments": {
+            "end_line": 85,
+            "filepath": "fastapi/dependencies/models.py",
+            "start_line\"": 75
+          },
+          "extra": {
+            "elapsed_s": 30.15755033493042,
+            "timestamp": 1792908094.595598,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/dependencies/models.py\", \"content\": \"import inspect\\nimport sys\\nfrom dataclasses import dataclass, field\\nfrom functools import cached_property, partial\\nfrom typing import Any, Callable, List, Optional, Sequence, Union\\n\\nfrom fastapi._compat import ModelField\\nfrom fastapi.security.base import SecurityBase\\nfrom fastapi.types import DependencyCacheKey\\nfrom typing_extensions import Literal\\n\\nif sys.version_info >= (3, 13):  # pragma: no cover\\n    from inspect import iscoroutinefunction\\nelse:  # pragma: no cover\\n    from asyncio import iscoroutinefunction\\n\\n\\n@dataclass\\nclass SecurityRequirement:\\n    security_scheme: SecurityBase\\n    scopes: Optional[Sequence[str]] = None\\n\\n\\n@dataclass\\nclass Dependant:\\n    path_params: List[ModelField] = field(default_factory=list)\\n    query_params: List[ModelField] = field(default_factory=list)\\n    header_params: List[ModelField] = field(default_factory=list)\\n    cookie_params: List[ModelField] = field(default_factory=list)\\n    body_params: List[ModelField] = field(default_factory=list)\\n    dependencies: List[\\\"Dependant\\\"] = field(default_factory=list)\\n    security_requirements: List[SecurityRequirement] = field(default_factory=list)\\n    name: Optional[str] = None\\n    call: Optional[Callable[..., Any]] = None\\n    request_param_name: Optional[str] = None\\n    websocket_param_name: Optional[str] = None\\n    http_connection_param_name: Optional[str] = None\\n    response_param_name: Optional[str] = None\\n    background_tasks_param_name: Optional[str] = None\\n    security_scopes_param_name: Optional[str] = None\\n    own_oauth_scopes: Optional[List[str]] = None\\n    parent_oauth_scopes: Optional[List[str]] = None\\n    use_cache: bool = True\\n    path: Optional[str] = None\\n    scope: Union[Literal[\\\"function\\\", \\\"request\\\"], None] = None\\n\\n    @cached_property\\n    def oauth_scopes(self) -> List[str]:\\n        scopes = self.parent_oauth_scopes.copy() if self.parent_oauth_scopes else []\\n        # This doesn't use a set to preserve order, just in case\\n        for scope in self.own_oauth_scopes or []:\\n            if scope not in scopes:\\n                scopes.append(scope)\\n        return scopes\\n\\n    @cached_property\\n    def cache_key(self) -> DependencyCacheKey:\\n        scopes_for_cache = (\\n            tuple(sorted(set(self.oauth_scopes or []))) if self._uses_scopes else ()\\n        )\\n        return (\\n            self.call,\\n            scopes_for_cache,\\n            self.computed_scope or \\\"\\\",\\n        )\\n\\n    @cached_property\\n    def _uses_scopes(self) -> bool:\\n        if self.own_oauth_scopes:\\n            return True\\n        if self.security_scopes_param_name is not None:\\n            return True\\n        for sub_dep in self.dependencies:\\n            if sub_dep._uses_scopes:\\n                return True\\n        return False\\n\\n    @cached_property\\n    def _unwrapped_call(self) -> Any:\\n        if self.call is None:\\n            return self.call  # pragma: no cover\\n        unwrapped = inspect.unwrap(self.call)\\n        if isinstance(unwrapped, partial):\\n            unwrapped = unwrapped.func\\n        return unwrapped\", \"start_line\": 1, \"end_line\": 85, \"total_lines\": 116, \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "read_file",
+          "elapsed_s": 30.159372329711914,
+          "timestamp": 1792908094.59742,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 6121,
+        "completion_tokens": 55,
+        "cached_tokens": 0,
+        "total_tokens": 6176
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 30.15755033493042,
+        "timestamp": 1792908094.595598,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "agent",
+      "message": "Okay, I see `_unwrapped_call`:\n\n```python\n    @cached_property\n    def _unwrapped_call(self) -> Any:\n        if self.call is None:\n            return self.call  # pragma: no cover\n        unwrapped = inspect.unwrap(self.call)\n        if isinstance(unwrapped, partial):\n            unwrapped = unwrapped.func\n        return unwrapped\n```\n\nThe issue says: \"The logic to analyze if a function is an async, generator, async generator, callable instance, etc. now also checks and unwraps and extracts partials in all those levels.\" and \"if either is async, then it has to be awaited, no matter if the other is not async. So, analyzing only the last point in the chain is not enough, it's necessary to analyze the function but also the wrapper.\"\n\nWait, `inspect.unwrap` unwraps functions wrapped with `functools.wraps`.\nIf we have a `partial` of a wrapped function, or a wrapped `partial`, we need to be careful.\n\nExample:\n`f` is async.\n`f_wrapped = wraps(f)(f)`\n`f_partial = partial(f_wrapped)`\n\n`inspect.unwrap(f_partial)` will return `f_partial` because `partial` objects are not \"wrapped\" in the sense of `__wrapped__`.\nThen `isinstance(unwrapped, partial)` will be true, and `unwrapped = unwrapped.func` will return `f_wrapped`.\nThen `inspect.unwrap(f_wrapped)` would return `f`.\n\nBut the current implementation only does `inspect.unwrap` once and then checks for `partial` once.\n\nIf we have:\n`f` is async.\n`f_partial = partial(f)`\n`f_wrapped = wraps(f_partial)(f_partial)`\n\n`inspect.unwrap(f_wrapped)` returns `f_partial`.\n`isinstance(f_partial, partial)` is true, so `unwrapped = f_partial.func` returns `f`.\nThis case works.\n\nWhat if we have multiple layers of `partial` and `wraps`?\n`f` is async.\n`f_partial1 = partial(f)`\n`f_wrapped1 = wraps(f_partial1)(f_partial1)`\n`f_partial2 = partial(f_wrapped1)`\n`f_wrapped2 = wraps(f_partial2)(f_partial2)`\n\nCurrent logic:\n`unwrapped = inspect.unwrap(f_wrapped2)` -> `f_partial2`\n`if isinstance(f_partial2, partial): unwrapped = f_partial2.func` -> `f_wrapped1`\nReturn `f_wrapped1`.\n\nNow `is_coroutine_callable` will check `f_wrapped1`.\n`iscoroutinefunction(f_wrapped1)` might be false if the wrapper is not async.\nBut `f` is async, so it should be awaited.\n\nThe issue says: \"if either is async, then it has to be awaited, no matter if the other is not async.\"\n\nSo we need to check if ANY of the functions in the chain are async.\n\nWait, if a function is wrapped by `functools.wraps`, the wrapper usually preserves the async-ness if it's implemented correctly. But not always.\n\nActually, the issue says: \"The logic to analyze if a function is an async, generator, async generator, callable instance, etc. now also checks and unwraps and extracts partials in all those levels.\"\n\nLet's see how to implement this. We should probably loop until we can't unwrap or extract partial anymore, and keep track of whether any of them were async.\n\nBut wait, `is_coroutine_callable` is a property.\n\n```python\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        if inspect.isroutine(self._unwrapped_call):\n            return iscoroutinefunction(self._unwrapped_call)\n        if inspect.isclass(self._unwrapped_call):\n            return False\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return iscoroutinefunction(dunder_call)\n```\n\nIf `_unwrapped_call` is the result of the current `_unwrapped_call` property, it only returns the innermost function.\n\nIf we want to know if ANY of them are async, we should check each one.\n\nLet's look at the proposed fix logic: \"The logic to analyze if a function is an async, generator, async generator, callable instance, etc. now also checks and unwraps and extracts partials in all those levels.\"\n\nThis suggests that `_unwrapped_call` should maybe be a list of all calls in the chain, or we should change how `is_coroutine_callable` etc. are implemented.\n\nActually, if we want to know if it's async, we can just check the original `self.call` and then keep unwrapping and checking.\n\nWait, if the wrapper is async, then the whole thing is async. If the wrapped function is async, then the whole thing is async (because the wrapper should await it).\n\nSo we need to check if any function in the chain is async.\n\nLet's see if there are other places where this is needed.\n`is_gen_callable` and `is_async_gen_callable` also use `_unwrapped_call`.\n\n```python\n    @cached_property\n    def is_gen_callable(self) -> bool:\n        if inspect.isgeneratorfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isgeneratorfunction(dunder_call)\n\n    @cached_property\n    def is_async_gen_callable(self) -> bool:\n        if inspect.isasyncgenfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isasyncgenfunction(dunder_call)\n```\n\nIf any of them are async generators, then the whole thing is an async generator.\n\nSo, we need a way to get all the functions in the chain.\n\n```python\ndef get_all_unwrapped(call):\n    calls = []\n    current = call\n    while True:\n        calls.append(current)\n        if hasattr(current, \"__wrapped__\"):\n            current = current.__wrapped__\n        elif isinstance(current, partial):\n            current = current.func\n        else:\n            break\n    return calls\n```\n\nWait, `inspect.unwrap` does exactly the `__wrapped__` loop.\n\n```python\ndef unwrap(obj):\n    \"\"\"Unwrap the given object to find the original function.\"\"\"\n    while hasattr(obj, \"__wrapped__\"):\n        obj = obj.__wrapped__\n    return obj\n```\n\nSo if we have `partial` in the mix, we need to handle both.\n\n```python\ndef get_all_unwrapped(call):\n    calls = []\n    current = call\n    while True:\n        calls.append(current)\n        # Try unwrapping\n        unwrapped = inspect.unwrap(current)\n        if unwrapped is not current:\n            current = unwrapped\n            continue\n        # Try partial\n        if isinstance(current, partial):\n            current = current.func\n            continue\n        break\n    return calls\n```\n\nWait, if `current` is a `partial`, `inspect.unwrap(current)` will return `current`. Then we check `isinstance(current, partial)` and get `current.func`. Then we loop again and `inspect.unwrap` might find more `__wrapped__` in `current.func`. This seems correct.\n\nNow, how to integrate this into `Dependant`?\n\nWe can change `_unwrapped_call` to return the list of all unwrapped calls, or create a new property.\n\nBut `is_coroutine_callable` etc. expect a single callable.\n\nIf we want to know if ANY of them are async, we can do:\n\n```python\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isroutine(call):\n                if iscoroutinefunction(call):\n                    return True\n            if not inspect.isclass(call):\n                dunder_call = getattr(call, \"__call__\", None)\n                if iscoroutinefunction(dunder_call):\n                    return True\n        return False\n```\n\nWait, if the wrapper is NOT async but the wrapped function IS async, the wrapper MUST be async to await the wrapped function. If the wrapper is not async, it can't await the wrapped function, so it's probably a bug in the wrapper. But FastAPI should probably still treat it as async if it's going to be called.\n\nActually, if the wrapper is not async, but it returns a coroutine, then `iscoroutinefunction` might be false for the wrapper, but it still needs to be awaited.\n\nWait, `iscoroutinefunction` checks if the function is defined with `async def`.\n\nIf a regular function returns a coroutine, it's still a coroutine function in some sense, but `iscoroutinefunction` returns `False`.\n\nHowever, `is_async_callable` from starlette (which is used in `routing.py`) might be different.\n\nLet's see what `is_async_callable` does. It's in `starlette._utils`. I can't see starlette code easily unless I find it in the environment.\n\nWait, I can just run a small script to see what `is_async_callable` does.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_24",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "python3 -c \"from starlette._utils import is_async_callable; import asyncio; async def f(): pass; def g(): return f(); print(f'f: {is_async_callable(f)}'); print(f'g: {is_async_callable(g)}')\""
+          },
+          "extra": {
+            "elapsed_s": 103.5062415599823,
+            "timestamp": 1792908167.9442892,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"Landlock filesystem confinement active (ABI 4)\\n  File \\\"<string>\\\", line 1\\n    from starlette._utils import is_async_callable; import asyncio; async def f(): pass; def g(): return f(); print(f'f: {is_async_callable(f)}'); print(f'g: {is_async_callable(g)}')\\n                                                                    ^^^^^\\nSyntaxError: invalid syntax\\n\", \"details\": {\"stdout\": \"\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n  File \\\"<string>\\\", line 1\\n    from starlette._utils import is_async_callable; import asyncio; async def f(): pass; def g(): return f(); print(f'f: {is_async_callable(f)}'); print(f'g: {is_async_callable(g)}')\\n                                                                    ^^^^^\\nSyntaxError: invalid syntax\\n\", \"exit_code\": 1}}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 103.55673122406006,
+          "timestamp": 1792908167.9947789,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 7138,
+        "completion_tokens": 2308,
+        "cached_tokens": 0,
+        "total_tokens": 9446
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 103.5062415599823,
+        "timestamp": 1792908167.9442892,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "agent",
+      "message": "Ah, the `f-string` in `python -c` might be causing issues with the shell or the python version. Let's use a simpler print.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_27",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "python3 -c \"from starlette._utils import is_async_callable; import asyncio; async def f(): pass; def g(): return f(); print('f:', is_async_callable(f)); print('g:', is_async_callable(g))\""
+          },
+          "extra": {
+            "elapsed_s": 107.49074721336365,
+            "timestamp": 1792908171.9287949,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"error\", \"error_type\": \"CommandError\", \"error_message\": \"Landlock filesystem confinement active (ABI 4)\\n  File \\\"<string>\\\", line 1\\n    from starlette._utils import is_async_callable; import asyncio; async def f(): pass; def g(): return f(); print('f:', is_async_callable(f)); print('g:', is_async_callable(g))\\n                                                                    ^^^^^\\nSyntaxError: invalid syntax\\n\", \"details\": {\"stdout\": \"\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n  File \\\"<string>\\\", line 1\\n    from starlette._utils import is_async_callable; import asyncio; async def f(): pass; def g(): return f(); print('f:', is_async_callable(f)); print('g:', is_async_callable(g))\\n                                                                    ^^^^^\\nSyntaxError: invalid syntax\\n\", \"exit_code\": 1}}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 107.55871891975403,
+          "timestamp": 1792908171.9967666,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 9692,
+        "completion_tokens": 110,
+        "cached_tokens": 0,
+        "total_tokens": 9802
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 107.49074721336365,
+        "timestamp": 1792908171.9287949,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "agent",
+      "message": "Wait, why is it giving a `SyntaxError` at `is_async_callable(f)`?\nMaybe it's the `async def f(): pass` in the same line?\n\nLet's try:",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_30",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "python3 -c \"\nfrom starlette._utils import is_async_callable\nimport asyncio\nasync def f(): pass\ndef g(): return f()\nprint('f:', is_async_callable(f))\nprint('g:', is_async_callable(g))\n\""
+          },
+          "extra": {
+            "elapsed_s": 111.43109560012817,
+            "timestamp": 1792908175.8691432,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"f: True\\ng: False\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 111.52809548377991,
+          "timestamp": 1792908175.9661431,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 10032,
+        "completion_tokens": 126,
+        "cached_tokens": 0,
+        "total_tokens": 10158
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 111.43109560012817,
+        "timestamp": 1792908175.8691432,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "message": "Okay, so `is_async_callable` only returns `True` for `async def` functions.\n\nNow let's go back to `fastapi/dependencies/models.py`.\n\nThe current `_unwrapped_call` implementation:\n\n```python\n    @cached_property\n    def _unwrapped_call(self) -> Any:\n        if self.call is None:\n            return self.call  # pragma: no cover\n        unwrapped = inspect.unwrap(self.call)\n        if isinstance(unwrapped, partial):\n            unwrapped = unwrapped.func\n        return unwrapped\n```\n\nIf we have `partial(wraps(f)(f))`, `inspect.unwrap` returns the `partial` object. Then `isinstance(unwrapped, partial)` is true, and it returns `wraps(f)(f)`.\nBut `wraps(f)(f)` is still wrapped! We should unwrap it again.\n\nSo we need a loop.\n\n```python\n    @cached_property\n    def _unwrapped_call(self) -> Any:\n        if self.call is None:\n            return self.call  # pragma: no cover\n        \n        current = self.call\n        while True:\n            unwrapped = inspect.unwrap(current)\n            if unwrapped is not current:\n                current = unwrapped\n                continue\n            if isinstance(current, partial):\n                current = current.func\n                continue\n            break\n        return current\n```\n\nWait, if we do this, `_unwrapped_call` will return the innermost function.\nBut the issue says: \"if either is async, then it has to be awaited, no matter if the other is not async. So, analyzing only the last point in the chain is not enough, it's necessary to analyze the function but also the wrapper.\"\n\nThis means if ANY function in the chain is async, the whole thing should be treated as async.\n\nSo `is_coroutine_callable` should check all of them.\n\nLet's see how to implement this.\n\nWe can introduce a new property `_all_unwrapped_calls` that returns the list of all functions in the chain.\n\n```python\n    @cached_property\n    def _all_unwrapped_calls(self) -> List[Any]:\n        if self.call is None:\n            return []\n        \n        calls = []\n        current = self.call\n        while True:\n            calls.append(current)\n            unwrapped = inspect.unwrap(current)\n            if unwrapped is not current:\n                current = unwrapped\n                continue\n            if isinstance(current, partial):\n                current = current.func\n                continue\n            break\n        return calls\n```\n\nThen `is_coroutine_callable` becomes:\n\n```python\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isroutine(call):\n                if iscoroutinefunction(call):\n                    return True\n            if not inspect.isclass(call):\n                dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n                if iscoroutinefunction(dunder_call):\n                    return True\n        return False\n```\n\nAnd similarly for `is_gen_callable` and `is_async_gen_callable`.\n\nWait, if I change `_unwrapped_call` to be a list, I might break other things.\nBut `_unwrapped_call` is only used in `is_gen_callable`, `is_async_gen_callable`, and `is_coroutine_callable`.\n\nLet's check if `_unwrapped_call` is used anywhere else in `fastapi/dependencies/models.py`.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_33",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "grep \"_unwrapped_call\" fastapi/dependencies/models.py"
+          },
+          "extra": {
+            "elapsed_s": 138.76121401786804,
+            "timestamp": 1792908203.1992617,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"    def _unwrapped_call(self) -> Any:\\n        if inspect.isgeneratorfunction(self._unwrapped_call):\\n        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n        if inspect.isasyncgenfunction(self._unwrapped_call):\\n        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n        if inspect.isroutine(self._unwrapped_call):\\n            return iscoroutinefunction(self._unwrapped_call)\\n        if inspect.isclass(self._unwrapped_call):\\n        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 140.19263577461243,
+          "timestamp": 1792908204.6306834,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 10212,
+        "completion_tokens": 882,
+        "cached_tokens": 0,
+        "total_tokens": 11094
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 138.76121401786804,
+        "timestamp": 1792908203.1992617,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "agent",
+      "message": "предоставление",
+      "model_name": "gemma4_notebook_v2",
+      "metrics": {
+        "prompt_tokens": 11328,
+        "completion_tokens": 1674,
+        "cached_tokens": 0,
+        "total_tokens": 13002
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 191.23410367965698,
+        "timestamp": 1792908255.6721513,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "agent",
+      "message": "thought\nIt's only used in those three properties.\n\nWait, what about `is_coroutinefunction`? It's imported from `asyncio` or `inspect` depending on python version.\n\nLet's see the imports in `fastapi/dependencies/models.py`.\n\n```python\nif sys.version_info >= (3, 13):  # pragma: no cover\n    from inspect import iscoroutinefunction\nelse:  # pragma: no cover\n    from asyncio import iscoroutinefunction\n```\n\nThis is already there.\n\nNow let's refine the implementation.\n\nI'll add `_all_unwrapped_calls` and update the three properties.\n\nWait, if I use `_all_unwrapped_calls`, I should make sure it doesn't enter an infinite loop if there's a circular reference (though unlikely with `wraps` and `partial`).\n\n```python\n    @cached_property\n    def _all_unwrapped_calls(self) -> List[Any]:\n        if self.call is None:\n            return []\n        \n        calls = []\n        current = self.call\n        while True:\n            calls.append(current)\n            unwrapped = inspect.unwrap(current)\n            if unwrapped is not current:\n                current = unwrapped\n                continue\n            if isinstance(current, partial):\n                current = current.func\n                continue\n            break\n        return calls\n```\n\nWait, if `current` is a `partial`, `inspect.unwrap(current)` returns `current`. Then we set `current = current.func`. Then we loop.\nIf `current.func` is also a `partial`, it will be handled in the next iteration.\nIf `current.func` is wrapped, `inspect.unwrap` will handle it.\n\nOne detail: `inspect.unwrap` already loops through `__wrapped__`.\n\n```python\ndef unwrap(obj):\n    while hasattr(obj, \"__wrapped__\"):\n        obj = obj.__wrapped__\n    return obj\n```\n\nSo if we have `partial(wrapped(f))`, `inspect.unwrap(partial)` returns `partial`. Then we get `wrapped(f)`. Then `inspect.unwrap(wrapped(f))` returns `f`.\n\nSo the loop:\n1. `current = partial(wrapped(f))`\n2. `unwrapped = inspect.unwrap(current)` -> `partial(wrapped(f))`\n3. `unwrapped is current` is True.\n4. `isinstance(current, partial)` is True.\n5. `current = current.func` -> `wrapped(f)`\n6. Loop.\n7. `unwrapped = inspect.unwrap(current)` -> `f`\n8. `unwrapped is not current` is True.\n9. `current = f`\n10. Loop.\n11. `unwrapped = inspect.unwrap(f)` -> `f`\n12. `unwrapped is current` is True.\n13. `isinstance(f, partial)` is False.\n14. Break.\n\nResult: `[partial(wrapped(f)), wrapped(f), f]`. This is correct.\n\nNow let's implement the changes in `fastapi/dependencies/models.py`.\n\nI will:\n1. Add `_all_unwrapped_calls` property.\n2. Update `is_gen_callable`.\n3. Update `is_async_gen_callable`.\n4. Update `is_coroutine_callable`.\n5. Remove `_unwrapped_call` if it's no longer used.\n\nWait, if I remove `_unwrapped_call`, I should make sure I don't break anything. I already checked and it's only used in those three.\n\nLet's double check the `is_gen_callable` implementation.\n\n```python\n    @cached_property\n    def is_gen_callable(self) -> bool:\n        if inspect.isgeneratorfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isgeneratorfunction(dunder_call)\n```\n\nIf I change it to:\n\n```python\n    @cached_property\n    def is_gen_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isgeneratorfunction(call):\n                return True\n            dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n            if inspect.isgeneratorfunction(dunder_call):\n                return True\n        return False\n```\n\nThis looks correct.\n\nSame for `is_async_gen_callable`:\n\n```python\n    @cached_property\n    def is_async_gen_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isasyncgenfunction(call):\n                return True\n            dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n            if inspect.isasyncgenfunction(dunder_call):\n                return True\n        return False\n```\n\nAnd `is_coroutine_callable`:\n\n```python\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isroutine(call):\n                if iscoroutinefunction(call):\n                    return True\n            if not inspect.isclass(call):\n                dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n                if iscoroutinefunction(dunder_call):\n                    return True\n        return False\n```\n\nWait, the original `is_coroutine_callable` had:\n\n```python\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        if inspect.isroutine(self._unwrapped_call):\n            return iscoroutinefunction(self._unwrapped_call)\n        if inspect.isclass(self._unwrapped_call):\n            return False\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return iscoroutinefunction(dunder_call)\n```\n\nIf `self._unwrapped_call` is a class, it returns `False`.\nIn my loop, if one of the calls is a class, it just continues to the next one. If none of them are coroutine functions, it returns `False`. This is equivalent.\n\nWait, if the innermost call is a class, the original code returns `False` immediately.\nIn my loop, if the innermost call is a class, it will check it and then return `False` (unless some other call in the chain was a coroutine function). This is also correct.\n\nLet's check if there are any other places where `_unwrapped_call` is used. I already did `grep`, but let's be sure.\n\nActually, I should probably keep `_unwrapped_call` for backward compatibility if it's public, but it starts with `_`, so it's internal.\n\nWait, I should check if `_unwrapped_call` is used in other files.\n\n<channel|>",
+      "model_name": "gemma4_notebook_v2",
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "text",
+        "elapsed_s": 191.23410367965698,
+        "timestamp": 1792908255.6721513,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "agent",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_37",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "git grep \"_unwrapped_call\" /workspace/fastapi"
+          },
+          "extra": {
+            "elapsed_s": 191.23410367965698,
+            "timestamp": 1792908255.6721513,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"fastapi/dependencies/models.py:    def _unwrapped_call(self) -> Any:\\nfastapi/dependencies/models.py:        if inspect.isgeneratorfunction(self._unwrapped_call):\\nfastapi/dependencies/models.py:        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\nfastapi/dependencies/models.py:        if inspect.isasyncgenfunction(self._unwrapped_call):\\nfastapi/dependencies/models.py:        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\nfastapi/dependencies/models.py:        if inspect.isroutine(self._unwrapped_call):\\nfastapi/dependencies/models.py:            return iscoroutinefunction(self._unwrapped_call)\\nfastapi/dependencies/models.py:        if inspect.isclass(self._unwrapped_call):\\nfastapi/dependencies/models.py:        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 191.32720971107483,
+          "timestamp": 1792908255.7652574,
+          "author": "swe_agent"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "elapsed_s": 191.23410367965698,
+        "timestamp": 1792908255.6721513,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "agent",
+      "message": "Okay, it's only used in `fastapi/dependencies/models.py`.\n\nNow let's apply the changes.\n\nI'll first add `_all_unwrapped_calls` and then update the other properties.\n\nWait, I can just replace `_unwrapped_call` with `_all_unwrapped_calls` and update the properties in one go.\n\nLet's see the original code again.\n\n```python\n    @cached_property\n    def _unwrapped_call(self) -> Any:\n        if self.call is None:\n            return self.call  # pragma: no cover\n        unwrapped = inspect.unwrap(self.call)\n        if isinstance(unwrapped, partial):\n            unwrapped = unwrapped.func\n        return unwrapped\n\n    @cached_property\n    def is_gen_callable(self) -> bool:\n        if inspect.isgeneratorfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isgeneratorfunction(dunder_call)\n\n    @cached_property\n    def is_async_gen_callable(self) -> bool:\n        if inspect.isasyncgenfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isasyncgenfunction(dunder_call)\n\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        if inspect.isroutine(self._unwrapped_call):\n            return iscoroutinefunction(self._unwrapped_call)\n        if inspect.isclass(self._unwrapped_call):\n            return False\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return iscoroutinefunction(dunder_call)\n```\n\nI will replace this whole block.\n\nWait, I should make sure I don't miss any imports. `List` is already imported from `typing`. `inspect` is already imported. `partial` is already imported.\n\nLet's prepare the new code.\n\n```python\n    @cached_property\n    def _all_unwrapped_calls(self) -> List[Any]:\n        if self.call is None:\n            return []\n        calls = []\n        current = self.call\n        while True:\n            calls.append(current)\n            unwrapped = inspect.unwrap(current)\n            if unwrapped is not current:\n                current = unwrapped\n                continue\n            if isinstance(current, partial):\n                current = current.func\n                continue\n            break\n        return calls\n\n    @cached_property\n    def is_gen_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isgeneratorfunction(call):\n                return True\n            dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n            if inspect.isgeneratorfunction(dunder_call):\n                return True\n        return False\n\n    @cached_property\n    def is_async_gen_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isasyncgenfunction(call):\n                return True\n            dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n            if inspect.isasyncgenfunction(dunder_call):\n                return True\n        return False\n\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isroutine(call):\n                if iscoroutinefunction(call):\n                    return True\n            if not inspect.isclass(call):\n                dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n                if iscoroutinefunction(dunder_call):\n                    return True\n        return False\n```\n\nWait, I should check if `_unwrapped_call` is used in `computed_scope`.\n\n```python\n    @cached_property\n    def computed_scope(self) -> Union[str, None]:\n        if self.scope:\n            return self.scope\n        if self.is_gen_callable or self.is_async_gen_callable:\n            return \"request\"\n        return None\n```\n\nNo, it uses `is_gen_callable` and `is_async_gen_callable`.\n\nOne more thing: the issue mentions \"classes in path operations and dependencies\".\nIf a class is used as a dependency, it's called. If its `__call__` is async, it should be awaited.\n\nMy `is_coroutine_callable` handles this:\n\n```python\n            if not inspect.isclass(call):\n                dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n                if iscoroutinefunction(dunder_call):\n                    return True\n```\n\nIf `call` is a class, `inspect.isclass(call)` is True, so it skips this.\nBut if `call` is an instance of a class, `inspect.isclass(call)` is False, and it checks `__call__`.\n\nWhat if the class itself is the callable? (e.g. `Dependant(call=MyClass)`).\nThen `MyClass()` is called. If `MyClass.__init__` is async? No, `__init__` cannot be async.\nBut if `MyClass` is a class that implements `__call__`? No, that's an instance.\n\nWait, if `call` is a class, then `call()` creates an instance.\nIf the instance is then called? No, FastAPI dependencies usually call the `call` once.\nIf `call` is a class, it's instantiated.\n\nWait, if `call` is a class, `is_coroutine_callable` should return `False` because you can't await the result of `MyClass()` unless `MyClass()` returns a coroutine. But `MyClass()` returns an instance of `MyClass`.\n\nSo the original logic:\n```python\n        if inspect.isclass(self._unwrapped_call):\n            return False\n```\nwas correct.\n\nMy new logic:\n```python\n            if not inspect.isclass(call):\n                dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n                if iscoroutinefunction(dunder_call):\n                    return True\n```\nalso returns `False` for classes (it just doesn't return `True`).\n\nWait, if `call` is a class, `inspect.isroutine(call)` is False. `inspect.isclass(call)` is True. So it doesn't return `True`.\n\nThis seems correct.\n\nLet's apply the edit.\n\nI'll use `edit_file` to replace the block from `_unwrapped_call` to the end of `is_coroutine_callable`.\n\nWait, I should be careful with the line numbers.\n\n```python\n    @cached_property\n    def _unwrapped_call(self) -> Any:\n        if self.call is None:\n            return self.call  # pragma: no cover\n        unwrapped = inspect.unwrap(self.call)\n        if isinstance(unwrapped, partial):\n            unwrapped = unwrapped.func\n        return unwrapped\n\n    @cached_property\n    def is_gen_callable(self) -> bool:\n        if inspect.isgeneratorfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isgeneratorfunction(dunder_call)\n\n    @cached_property\n    def is_async_gen_callable(self) -> bool:\n        if inspect.isasyncgenfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isasyncgenfunction(dunder_call)\n\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        if inspect.isroutine(self._unwrapped_call):\n            return iscoroutinefunction(self._unwrapped_call)\n        if inspect.isclass(self._unwrapped_call):\n            return False\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return iscoroutinefunction(dunder_call)\n```\n\nI will replace this with the new implementation.\n\nWait, I should make sure I use the exact indentation.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_40",
+          "function_name": "edit_file",
+          "arguments": {
+            "filepath": "fastapi/dependencies/models.py",
+            "new_string": "    @cached_property\n    def _all_unwrapped_calls(self) -> List[Any]:\n        if self.call is None:\n            return []\n        calls = []\n        current = self.call\n        while True:\n            calls.append(current)\n            unwrapped = inspect.unwrap(current)\n            if unwrapped is not current:\n                current = unwrapped\n                continue\n            if isinstance(current, partial):\n                current = current.func\n                continue\n            break\n        return calls\n\n    @cached_property\n    def is_gen_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isgeneratorfunction(call):\n                return True\n            dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n            if inspect.isgeneratorfunction(dunder_call):\n                return True\n        return False\n\n    @cached_property\n    def is_async_gen_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isasyncgenfunction(call):\n                return True\n            dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n            if inspect.isasyncgenfunction(dunder_call):\n                return True\n        return False\n\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        for call in self._all_unwrapped_calls:\n            if inspect.isroutine(call):\n                if iscoroutinefunction(call):\n                    return True\n            if not inspect.isclass(call):\n                dunder_call = getattr(call, \"__call__\", None)  # noqa: B004\n                if iscoroutinefunction(dunder_call):\n                    return True\n        return False\n",
+            "old_string": "    @cached_property\n    def _unwrapped_call(self) -> Any:\n        if self.call is None:\n            return self.call  # pragma: no cover\n        unwrapped = inspect.unwrap(self.call)\n        if isinstance(unwrapped, partial):\n            unwrapped = unwrapped.func\n        return unwrapped\n\n    @cached_property\n    def is_gen_callable(self) -> bool:\n        if inspect.isgeneratorfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isgeneratorfunction(dunder_call)\n\n    @cached_property\n    def is_async_gen_callable(self) -> bool:\n        if inspect.isasyncgenfunction(self._unwrapped_call):\n            return True\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return inspect.isasyncgenfunction(dunder_call)\n\n    @cached_property\n    def is_coroutine_callable(self) -> bool:\n        if inspect.isroutine(self._unwrapped_call):\n            return iscoroutinefunction(self._unwrapped_call)\n        if inspect.isclass(self._unwrapped_call):\n            return False\n        dunder_call = getattr(self._unwrapped_call, \"__call__\", None)  # noqa: B004\n        return iscoroutinefunction(dunder_call)\n"
+          },
+          "extra": {
+            "elapsed_s": 283.5915050506592,
+            "timestamp": 1792908348.0295527,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"filepath\": \"fastapi/dependencies/models.py\", \"occurrences\": 1, \"strategy\": \"exact\", \"diff\": \"--- a/fastapi/dependencies/models.py\\n+++ b/fastapi/dependencies/models.py\\n@@ -76,36 +76,54 @@\\n         return False\\n \\n     @cached_property\\n-    def _unwrapped_call(self) -> Any:\\n+    def _all_unwrapped_calls(self) -> List[Any]:\\n         if self.call is None:\\n-            return self.call  # pragma: no cover\\n-        unwrapped = inspect.unwrap(self.call)\\n-        if isinstance(unwrapped, partial):\\n-            unwrapped = unwrapped.func\\n-        return unwrapped\\n+            return []\\n+        calls = []\\n+        current = self.call\\n+        while True:\\n+            calls.append(current)\\n+            unwrapped = inspect.unwrap(current)\\n+            if unwrapped is not current:\\n+                current = unwrapped\\n+                continue\\n+            if isinstance(current, partial):\\n+                current = current.func\\n+                continue\\n+            break\\n+        return calls\\n \\n     @cached_property\\n     def is_gen_callable(self) -> bool:\\n-        if inspect.isgeneratorfunction(self._unwrapped_call):\\n-            return True\\n-        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n-        return inspect.isgeneratorfunction(dunder_call)\\n+        for call in self._all_unwrapped_calls:\\n+            if inspect.isgeneratorfunction(call):\\n+                return True\\n+            dunder_call = getattr(call, \\\"__call__\\\", None)  # noqa: B004\\n+            if inspect.isgeneratorfunction(dunder_call):\\n+                return True\\n+        return False\\n \\n     @cached_property\\n     def is_async_gen_callable(self) -> bool:\\n-        if inspect.isasyncgenfunction(self._unwrapped_call):\\n-            return True\\n-        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n-        return inspect.isasyncgenfunction(dunder_call)\\n+        for call in self._all_unwrapped_calls:\\n+            if inspect.isasyncgenfunction(call):\\n+                return True\\n+            dunder_call = getattr(call, \\\"__call__\\\", None)  # noqa: B004\\n+            if inspect.isasyncgenfunction(dunder_call):\\n+                return True\\n+        return False\\n \\n     @cached_property\\n     def is_coroutine_callable(self) -> bool:\\n-        if inspect.isroutine(self._unwrapped_call):\\n-            return iscoroutinefunction(self._unwrapped_call)\\n-        if inspect.isclass(self._unwrapped_call):\\n-            return False\\n-        dunder_call = getattr(self._unwrapped_call, \\\"__call__\\\", None)  # noqa: B004\\n-        return iscoroutinefunction(dunder_call)\\n+        for call in self._all_unwrapped_calls:\\n+            if inspect.isroutine(call):\\n+                if iscoroutinefunction(call):\\n+                    return True\\n+            if not inspect.isclass(call):\\n+                dunder_call = getattr(call, \\\"__call__\\\", None)  # noqa: B004\\n+                if iscoroutinefunction(dunder_call):\\n+                    return True\\n+        return False\\n \\n     @cached_property\\n     def computed_scope(self) -> Union[str, None]:\\n\", \"is_truncated\": false}",
+        "extra": {
+          "tool_name": "edit_file",
+          "elapsed_s": 283.5942614078522,
+          "timestamp": 1792908348.032309,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 13318,
+        "completion_tokens": 2876,
+        "cached_tokens": 0,
+        "total_tokens": 16194
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 283.5915050506592,
+        "timestamp": 1792908348.0295527,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "agent",
+      "message": "Now I should verify the fix.\nSince I don't have the tests from the issue, I'll create a small reproduction script to verify that it correctly identifies async callables when wrapped in `partial` and `wraps`.\n\nWait, I'm not allowed to create test files in `tests/`, but I can run a script with `python -c`.\n\nLet's test the `Dependant` class.",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_43",
+          "function_name": "run_command",
+          "arguments": {
+            "command": "python3 -c \"\nimport inspect\nfrom functools import wraps, partial\nfrom fastapi.dependencies.models import Dependant\nfrom asyncio import iscoroutinefunction\n\nasync def f(): pass\ndef g(): pass\n\n# Case 1: Simple async\nd1 = Dependant(call=f)\nprint(f'Case 1 (async): {d1.is_coroutine_callable}') # Expected: True\n\n# Case 2: Simple sync\nd2 = Dependant(call=g)\nprint(f'Case 2 (sync): {d2.is_coroutine_callable}') # Expected: False\n\n# Case 3: Wrapped async\ndef wrap(func):\n    @wraps(func)\n    def wrapper(*args, **kwargs):\n        return func(*args, **kwargs)\n    return wrapper\n\nf_wrapped = wrap(f)\nd3 = Dependant(call=f_wrapped)\nprint(f'Case 3 (wrapped async): {d3.is_coroutine_callable}') # Expected: True\n\n# Case 4: Partial async\nf_partial = partial(f)\nd4 = Dependant(call=f_partial)\nprint(f'Case 4 (partial async): {d4.is_coroutine_callable}') # Expected: True\n\n# Case 5: Partial wrapped async\nf_wrapped_partial = partial(f_wrapped)\nd5 = Dependant(call=f_wrapped_partial)\nprint(f'Case 5 (partial wrapped async): {d5.is_coroutine_callable}') # Expected: True\n\n# Case 6: Wrapped partial async\nf_partial_wrapped = wrap(f_partial)\nd6 = Dependant(call=f_partial_wrapped)\nprint(f'Case 6 (wrapped partial async): {d6.is_coroutine_callable}') # Expected: True\n\n# Case 7: Complex chain\nf_complex = wrap(partial(wrap(partial(f))))\nd7 = Dependant(call=f_complex)\nprint(f'Case 7 (complex async): {d7.is_coroutine_callable}') # Expected: True\n\n# Case 8: Complex sync\ng_complex = wrap(partial(wrap(partial(g))))\nd8 = Dependant(call=g_complex)\nprint(f'Case 8 (complex sync): {d8.is_coroutine_callable}') # Expected: False\n\""
+          },
+          "extra": {
+            "elapsed_s": 304.705317735672,
+            "timestamp": 1792908369.1433654,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"stdout\": \"Case 1 (async): True\\nCase 2 (sync): False\\nCase 3 (wrapped async): True\\nCase 4 (partial async): True\\nCase 5 (partial wrapped async): True\\nCase 6 (wrapped partial async): True\\nCase 7 (complex async): True\\nCase 8 (complex sync): False\\n\", \"stderr\": \"Landlock filesystem confinement active (ABI 4)\\n\", \"exit_code\": 0}",
+        "extra": {
+          "tool_name": "run_command",
+          "elapsed_s": 305.1468904018402,
+          "timestamp": 1792908369.584938,
+          "author": "swe_agent"
+        }
+      },
+      "metrics": {
+        "prompt_tokens": 17143,
+        "completion_tokens": 652,
+        "cached_tokens": 0,
+        "total_tokens": 17795
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "thinking",
+        "elapsed_s": 304.705317735672,
+        "timestamp": 1792908369.1433654,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "agent",
+      "message": "---\nThe issue was that FastAPI's `Dependant` model failed to correctly identify if a callable was asynchronous, a generator, or an async generator when it was wrapped using both `functools.wraps` and `functools.partial`. The previous implementation only performed a single unwrapping step, which was insufficient for nested combinations of wrappers and partials.\n\nI have updated `fastapi/dependencies/models.py` to introduce a new `_all_unwrapped_calls` cached property. This property iteratively unwraps the callable, traversing the entire chain of `__wrapped__` attributes and `partial.func` references. The `is_gen_callable`, `is_async_gen_callable`, and `is_coroutine_callable` properties were then updated to check every function in this unwrapped chain. If any function in the chain satisfies the condition, the property now returns `True`.\n\nThis ensures that any combination of `wraps` and `partial` is correctly handled, and the original function's async/generator status is preserved.\n\nVerified with a reproduction script covering various combinations of `wraps` and `partial` for both sync and async functions.\n---",
+      "model_name": "gemma4_notebook_v2",
+      "metrics": {
+        "prompt_tokens": 9716,
+        "completion_tokens": 258,
+        "cached_tokens": 0,
+        "total_tokens": 9974
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "text",
+        "elapsed_s": 343.38394045829773,
+        "timestamp": 1792908407.821988,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "agent",
+      "model_name": "gemma4_notebook_v2",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_46",
+          "function_name": "submit_patch",
+          "arguments": {},
+          "extra": {
+            "elapsed_s": 343.38394045829773,
+            "timestamp": 1792908407.821988,
+            "author": "swe_agent",
+            "model_version": "gemma4_notebook_v2"
+          }
+        }
+      ],
+      "observation": {
+        "content": "{\"status\": \"ok\", \"patch_size\": 3107, \"files_changed\": 1}",
+        "extra": {
+          "tool_name": "submit_patch",
+          "elapsed_s": 343.5021951198578,
+          "timestamp": 1792908407.9402428,
+          "author": "swe_agent"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "elapsed_s": 343.38394045829773,
+        "timestamp": 1792908407.821988,
+        "author": "swe_agent"
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "agent",
+      "message": "The bug was fixed by updating `fastapi/dependencies/models.py` to iteratively unwrap callables wrapped by both `functools.wraps` and `functools.partial`. A new `_all_unwrapped_calls` property was added to traverse the entire chain of wrappers and partials, and the `is_gen_callable`, `is_async_gen_callable`, and `is_coroutine_callable` properties were updated to check all functions in this chain.",
+      "model_name": "gemma4_notebook_v2",
+      "metrics": {
+        "prompt_tokens": 10008,
+        "completion_tokens": 107,
+        "cached_tokens": 0,
+        "total_tokens": 10115
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "event_type": "final",
+        "elapsed_s": 346.7940649986267,
+        "timestamp": 1792908411.2321126,
+        "author": "swe_agent"
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 134427,
+    "total_completion_tokens": 9759,
+    "total_cached_tokens": 0,
+    "total_tokens": 144186,
+    "total_steps": 21
+  }
+}

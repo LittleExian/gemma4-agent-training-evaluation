@@ -1,0 +1,65 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 46a30b3e..95a90329 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -6,6 +6,7 @@ from enum import Enum
+ from typing import (
+     Any,
+     Dict,
++    ForwardRef,
+     List,
+     Sequence,
+     Set,
+@@ -48,6 +49,22 @@ RequiredParam = PydanticUndefined
+ Undefined = PydanticUndefined
+ UndefinedType = PydanticUndefinedType
+ evaluate_forwardref = eval_type_lenient
++
++
++def resolve_type(annotation: Any) -> Any:
++    if get_origin(annotation) is Annotated:
++        args = get_args(annotation)
++        return Annotated[(resolve_type(args[0]), *args[1:])]
++    if isinstance(annotation, (str, ForwardRef)):
++        try:
++            resolved = evaluate_forwardref(annotation)
++            if isinstance(resolved, (str, ForwardRef)):
++                return Any
++            return resolved
++        except Exception:
++            return Any
++    return annotation
++
+ Validator = Any
+ 
+ 
+@@ -96,7 +113,7 @@ class ModelField:
+                     "ignore", category=UnsupportedFieldAttributeWarning
+                 )
+             annotated_args = (
+-                self.field_info.annotation,
++                resolve_type(self.field_info.annotation),
+                 *self.field_info.metadata,
+                 self.field_info,
+             )
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..10f525c9
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,15 @@
++from typing import TYPE_CHECKING, Annotated
++from fastapi import FastAPI
++
++app = FastAPI()
++
++if TYPE_CHECKING:
++    class SomeType:
++        pass
++
++@app.get("/")
++async def root(item: Annotated["SomeType", "some info"]):
++    return {"message": "Hello World"}
++
++if __name__ == "__main__":
++    print(app.openapi())

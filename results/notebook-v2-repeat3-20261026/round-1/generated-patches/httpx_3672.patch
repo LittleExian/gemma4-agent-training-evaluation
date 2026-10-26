@@ -1,0 +1,83 @@
+diff --git a/src/httpx/_network.py b/src/httpx/_network.py
+index 5ea9bb5..d2d22a5 100644
+--- a/src/httpx/_network.py
++++ b/src/httpx/_network.py
+@@ -160,7 +160,7 @@ class NetworkServer:
+         self._max_workers = 5
+         self._executor = None
+         self._thread = None
+-        self._streams = list[NetworkStream]
++        self._streams = []
+ 
+     @property
+     def host(self):
+@@ -177,16 +177,20 @@ class NetworkServer:
+ 
+     def __exit__(self, exc_type, exc_val, exc_tb):
+         self.listener.close()
++        for stream in self._streams:
++            stream.close()
+         self._executor.shutdown(wait=True)
+ 
+     def _serve(self):
+         while stream := self.listener.accept():
++            self._streams.append(stream)
+             self._executor.submit(self._handler, stream)
+ 
+     def _handler(self, stream):
+         try:
+             self.handler(stream)
+         finally:
++            self._streams.remove(stream)
+             stream.close()
+ 
+ 
+diff --git a/src/httpx/_parsers.py b/src/httpx/_parsers.py
+index 830fccd..61ac4cb 100644
+--- a/src/httpx/_parsers.py
++++ b/src/httpx/_parsers.py
+@@ -375,7 +375,11 @@ class HTTPParser:
+             self.recv_state = State.DONE
+         return body
+ 
+-    def complete(self):
++    @property
++    def keep_alive(self) -> bool:
++        return self.send_keep_alive and self.recv_keep_alive
++
++    def reset(self):
+         is_fully_complete = self.send_state == State.DONE and self.recv_state == State.DONE
+         is_keepalive = self.send_keep_alive and self.recv_keep_alive
+ 
+diff --git a/src/httpx/_server.py b/src/httpx/_server.py
+index 95226d9..ac7ceb5 100644
+--- a/src/httpx/_server.py
++++ b/src/httpx/_server.py
+@@ -89,7 +89,12 @@ class HTTPConnection:
+ 
+     # Start it all over again...
+     def _complete(self):
+-        self._parser.complete
++        if self._parser.keep_alive:
++            while True:
++                chunk = self._recv_body()
++                if not chunk:
++                    break
++        self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+ 
+@@ -98,8 +103,11 @@ class HTTPServer:
+         self.url = f"http://{host}:{port}/"
+ 
+     def wait(self):
+-        while(True):
+-            sleep(1)
++        try:
++            while(True):
++                sleep(1)
++        except KeyboardInterrupt:
++            pass
+ 
+ 
+ @contextlib.contextmanager

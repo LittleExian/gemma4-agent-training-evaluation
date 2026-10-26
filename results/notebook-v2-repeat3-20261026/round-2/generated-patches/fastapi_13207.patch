@@ -1,0 +1,129 @@
+diff --git a/fastapi/_compat/v2.py b/fastapi/_compat/v2.py
+index 3d91814c..a85870cf 100644
+--- a/fastapi/_compat/v2.py
++++ b/fastapi/_compat/v2.py
+@@ -180,8 +180,8 @@ def get_schema_from_model_field(
+     ],
+     separate_input_output_schemas: bool = True,
+ ) -> Dict[str, Any]:
+-    override_mode: Union[Literal["validation"], None] = (
+-        None if separate_input_output_schemas else "validation"
++    override_mode: Union[Literal["validation", "serialization"], None] = (
++        None if separate_input_output_schemas else "serialization"
+     )
+     # This expects that GenerateJsonSchema was already used to generate the definitions
+     json_schema = field_mapping[(field, override_mode or field.mode)]
+@@ -204,8 +204,8 @@ def get_definitions(
+     Dict[str, Dict[str, Any]],
+ ]:
+     schema_generator = GenerateJsonSchema(ref_template=REF_TEMPLATE)
+-    override_mode: Union[Literal["validation"], None] = (
+-        None if separate_input_output_schemas else "validation"
++    override_mode: Union[Literal["validation", "serialization"], None] = (
++        None if separate_input_output_schemas else "serialization"
+     )
+     validation_fields = [field for field in fields if field.mode == "validation"]
+     serialization_fields = [field for field in fields if field.mode == "serialization"]
+diff --git a/repro.py b/repro.py
+new file mode 100644
+index 00000000..d6ccf51a
+--- /dev/null
++++ b/repro.py
+@@ -0,0 +1,41 @@
++from fastapi import FastAPI
++from pydantic import BaseModel, computed_field
++from fastapi.testclient import TestClient
++import json
++
++app = FastAPI(separate_input_output_schemas=False)
++
++class Item(BaseModel):
++    name: str
++    
++    @computed_field
++    @property
++    def description(self) -> str:
++        return f"Description of {self.name}"
++
++@app.get("/item", response_model=Item)
++def get_item():
++    return Item(name="test")
++
++client = TestClient(app)
++
++def test_openapi_schema():
++    response = client.get("/openapi.json")
++    schema = response.json()
++    
++    # Find the Item schema
++    # It should be under components/schemas/Item
++    item_schema = schema["components"]["schemas"]["Item"]
++    
++    print(f"Item schema properties: {item_schema.get('properties', {})}")
++    
++    assert "description" in item_schema.get("properties", {}), "Computed field 'description' missing from OpenAPI schema when separate_input_output_schemas=False"
++
++if __name__ == "__main__":
++    try:
++        test_openapi_schema()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++    except Exception as e:
++        print(f"An error occurred: {e}")
+diff --git a/repro_true.py b/repro_true.py
+new file mode 100644
+index 00000000..2c27e77d
+--- /dev/null
++++ b/repro_true.py
+@@ -0,0 +1,50 @@
++from fastapi import FastAPI
++from pydantic import BaseModel, computed_field
++from fastapi.testclient import TestClient
++import json
++
++app = FastAPI(separate_input_output_schemas=True)
++
++class Item(BaseModel):
++    name: str
++    
++    @computed_field
++    @property
++    def description(self) -> str:
++        return f"Description of {self.name}"
++
++@app.get("/item", response_model=Item)
++def get_item():
++    return Item(name="test")
++
++client = TestClient(app)
++
++def test_openapi_schema():
++    response = client.get("/openapi.json")
++    schema = response.json()
++    
++    # When separate_input_output_schemas=True, FastAPI should create separate schemas for input and output.
++    # The response_model=Item should use the output schema.
++    # Let's see what's in components/schemas.
++    schemas = schema["components"]["schemas"]
++    print(f"Schemas: {list(schemas.keys())}")
++    
++    # We expect Item and something like Item-items or Item-response
++    # Actually, FastAPI usually names them Item and Item-items or similar.
++    # Let's just check if any schema has 'description'
++    found_description = False
++    for name, schema_def in schemas.items():
++        if "properties" in schema_def and "description" in schema_def["properties"]:
++            print(f"Schema {name} has 'description'")
++            found_description = True
++            
++    assert found_description, "Computed field 'description' missing from any OpenAPI schema when separate_input_output_schemas=True"
++
++if __name__ == "__main__":
++    try:
++        test_openapi_schema()
++        print("Test passed!")
++    except AssertionError as e:
++        print(f"Test failed: {e}")
++    except Exception as e:
++        print(f"An error occurred: {e}")

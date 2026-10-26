@@ -1,0 +1,70 @@
+diff --git a/src/httpx/_parsers.py b/src/httpx/_parsers.py
+index 830fccd..61aefa3 100644
+--- a/src/httpx/_parsers.py
++++ b/src/httpx/_parsers.py
+@@ -109,6 +109,10 @@ class HTTPParser:
+         # Special states...
+         self.processing_1xx = False
+ 
++    @property
++    def keep_alive(self) -> bool:
++        return self.send_keep_alive and self.recv_keep_alive
++
+     def send_method_line(self, method: bytes, target: bytes, protocol: bytes) -> None:
+         """
+         Send the initial request line:
+@@ -375,11 +379,10 @@ class HTTPParser:
+             self.recv_state = State.DONE
+         return body
+ 
+-    def complete(self):
++    def reset(self):
+         is_fully_complete = self.send_state == State.DONE and self.recv_state == State.DONE
+-        is_keepalive = self.send_keep_alive and self.recv_keep_alive
+ 
+-        if not (is_fully_complete and is_keepalive):
++        if not (is_fully_complete and self.keep_alive):
+             self.close()
+             return
+ 
+diff --git a/src/httpx/_server.py b/src/httpx/_server.py
+index 95226d9..dffe0ba 100644
+--- a/src/httpx/_server.py
++++ b/src/httpx/_server.py
+@@ -49,8 +49,14 @@ class HTTPConnection:
+                     else:
+                         self._send_head(response)
+                         self._send_body(response)
++
++                    # Consume remaining body to allow keep-alive
++                    while stream.read(64 * 1024):
++                        pass
+         except Exception:
+             logger.error("Internal Server Error", exc_info=True)
++        finally:
++            self.close()
+ 
+     def close(self):
+         self._parser.close()
+@@ -88,8 +94,8 @@ class HTTPConnection:
+         self._parser.send_body(b'')
+ 
+     # Start it all over again...
+-    def _complete(self):
+-        self._parser.complete
++    def _complete(self): 
++        self._parser.reset()
+         self._idle_expiry = time.monotonic() + self._keepalive_duration
+ 
+ 
+@@ -122,5 +128,8 @@ def serve_http(endpoint):
+ 
+ 
+ def run(app):
+-    with serve_http(app) as server:
+-        server.wait()
++    try:
++        with serve_http(app) as server:
++            server.wait()
++    except KeyboardInterrupt:
++        pass
